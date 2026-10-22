@@ -1,0 +1,160 @@
+/* ── Google Fonts ─────────────────────────────────────────── */
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@400;600;700;800&display=swap");
+@import "tailwindcss";
+
+/* ── Design Tokens ────────────────────────────────────────── */
+@layer base {
+  :root {
+    /* Core palette */
+    --color-bg: 15 23 42;           /* slate-900 */
+    --color-surface: 30 41 59;      /* slate-800 */
+    --color-surface2: 51 65 85;     /* slate-700 */
+    --color-border: 71 85 105;      /* slate-600 */
+    --color-text: 248 250 252;      /* slate-50 */
+    --color-text-muted: 148 163 184; /* slate-400 */
+    --color-accent: 99 102 241;     /* indigo-500 */
+    --color-accent-hover: 129 140 248; /* indigo-400 */
+    --color-success: 34 197 94;     /* green-500 */
+    --color-warning: 251 191 36;    /* amber-400 */
+    --color-error: 239 68 68;       /* red-500 */
+
+    /* DBV colors */
+    --color-dbv-creation: 245 158 11;  /* amber-500 */
+    --color-dbv-execution: 99 102 241; /* indigo-500 */
+    --color-dbv-var: 148 163 184;
+    --color-dbv-let: 34 197 94;
+    --color-dbv-const: 239 68 68;
+    --color-dbv-fn: 217 70 239;     /* fuchsia-500 */
+    --color-dbv-tdz: 245 158 11;     /* amber-500 */
+
+    /* DBV Execution Stage Semantic Roles */
+    --color-stage-bg: var(--color-bg);
+    --color-panel-surface: var(--color-surface);
+    --color-panel-surface2: var(--color-surface2);
+    --color-panel-border: var(--color-border);
+    --color-ctx-card: 99 102 241;
+    --color-ctx-active: 129 140 248;
+    --color-webapi-card: 244 63 94;
+    --color-macrotask-card: 16 185 129;
+    --color-microtask-card: 217 70 239;
+
+    /* 8-color stable variable palette */
+    --color-var-1: 99 102 241;   /* indigo */
+    --color-var-2: 16 185 129;   /* emerald */
+    --color-var-3: 245 158 11;   /* amber */
+    --color-var-4: 244 63 94;    /* rose */
+    --color-var-5: 6 182 212;    /* cyan */
+    --color-var-6: 217 70 239;   /* fuchsia */
+    --color-var-7: 14 165 233;   /* sky */
+    --color-var-8: 132 204 22;   /* lime */
+
+    /* State indicators */
+    --color-state-tdz: var(--color-warning);
+    --color-state-changed: var(--color-accent);
+    --color-state-error: var(--color-error);
+    --color-state-success: var(--color-success);
+
+    /* Whiteboard colors */
+    --color-wb-bg: 255 255 255;
+    --color-wb-ink: 15 23 42;
+  }
+
+  .light {
+    --color-bg: 241 245 249;        /* slate-100 */
+    --color-surface: 255 255 255;
+    --color-surface2: 226 232 240;  /* slate-200 */
+    --color-border: 203 213 225;    /* slate-300 */
+    --color-text: 15 23 42;         /* slate-900 */
+    --color-text-muted: 100 116 139; /* slate-500 */
+
+    /* Light mode semantic role overrides */
+    --color-ctx-active: 79 70 229;  /* deeper indigo for contrast */
+    --color-webapi-card: 225 29 72; /* deeper rose */
+    --color-macrotask-card: 5 150 105; /* deeper emerald */
+    --color-microtask-card: 192 38 211; /* deeper fuchsia */
+    --color-var-1: 79 70 229;
+    --color-var-2: 5 150 105;
+    --color-var-3: 217 119 6;
+    --color-var-4: 225 29 72;
+    --color-var-5: 8 145 178;
+    --color-var-6: 192 38 211;
+    --color-var-7: 2 132 199;
+    --color-var-8: 101 163 13;
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    font-family: "Inter", system-ui, sans-serif;
+    background-color: rgb(var(--color-bg));
+    color: rgb(var(--color-text));
+    height: 100%;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    height: 100%;
+    overflow: hidden; /* app shell handles scrolling */
+  }
+
+  #root {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: rgb(var(--color-bg)); }
+  ::-webkit-scrollbar-thumb { background: rgb(var(--color-border)); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgb(var(--color-text-muted)); }
+}
+
+/* ── Utility classes ──────────────────────────────────────── */
+@layer utilities {
+  .font-code { font-family: "JetBrains Mono", monospace; }
+  .font-display { font-family: "Outfit", sans-serif; }
+
+  .glass {
+    background: rgba(var(--color-surface), 0.7);
+    backdrop-filter: blur(16px);
+    border: 1px solid rgba(var(--color-border), 0.5);
+  }
+
+  .glow-accent {
+    box-shadow: 0 0 20px rgba(var(--color-accent), 0.3),
+                0 0 40px rgba(var(--color-accent), 0.15);
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 0.2s ease-out;
+  }
+
+  .animate-slide-up {
+    animation: slideUp 0.25s ease-out;
+  }
+
+  .animate-pulse-once {
+    animation: pulseOnce 0.4s ease-out;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes pulseOnce {
+    0%   { background-color: rgba(var(--color-accent), 0); }
+    40%  { background-color: rgba(var(--color-accent), 0.3); }
+    100% { background-color: rgba(var(--color-accent), 0); }
+  }
+}
