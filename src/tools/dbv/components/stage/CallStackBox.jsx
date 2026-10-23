@@ -62,12 +62,13 @@ export function CallStackBox({ callStack, selectedCtxId, onSelectContext, active
             const isSelected = selectedCtxId ? ctx.id === selectedCtxId : isTop;
             const isCreation = ctx.phase === "Creation";
             const pausedLine = isTop ? activeLine ?? ctx.sourceLine : ctx.sourceLine;
-            // Format short label
-            const shortLabel = ctx.type === "Global"
-                ? "GEC"
+            // Format proper label and badge
+            const properName = ctx.type === "Global"
+                ? "Global Context"
                 : ctx.name === "(anonymous)"
-                    ? "FEC: (anon)"
-                    : `FEC: ${ctx.name}()`;
+                    ? "anonymous()"
+                    : `${ctx.name}()`;
+            const typeBadge = ctx.type === "Global" ? "GEC" : "FEC";
             const fullTooltip = ctx.type === "Global"
                 ? "Global Execution Context (GEC) — Always at base of call stack"
                 : `Function Execution Context: ${ctx.name}() — Defined at line ${ctx.sourceLine}`;
@@ -100,9 +101,15 @@ export function CallStackBox({ callStack, selectedCtxId, onSelectContext, active
                         <span className="font-mono text-xs font-bold truncate" style={{
                     color: isSelected
                         ? "rgb(var(--color-text))"
-                        : "rgba(var(--color-text), 0.82)",
+                        : "rgba(var(--color-text), 0.88)",
                 }}>
-                          {shortLabel}
+                          {properName}
+                        </span>
+                        <span className="text-[9px] font-mono px-1 py-0.2 rounded font-normal shrink-0 opacity-70" style={{
+                    background: "rgba(var(--color-border), 0.35)",
+                    color: "rgb(var(--color-text-muted))",
+                }}>
+                          {typeBadge}
                         </span>
                       </div>
 

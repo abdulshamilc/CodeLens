@@ -89,8 +89,8 @@ export function VisualizationZone({
               ? "Analyzing Example…"
               : displayedCtx
               ? displayedCtx.type === "Global"
-                ? "Global Execution Context"
-                : `FEC: ${displayedCtx.name}()`
+                ? "Global Execution Context (GEC)"
+                : `Function: ${displayedCtx.name}()`
               : "Execution Stage"}
           </h2>
           {displayedCtx && !isExampleLoading && (
@@ -317,6 +317,7 @@ export function VisualizationZone({
               ctx={displayedCtx}
               env={env}
               heap={step?.heap || {}}
+              callStack={step?.callStack || []}
               activeLine={isLiveContext ? activeLine : null}
               allCodeLines={allCodeLines}
               isLiveContext={isLiveContext}

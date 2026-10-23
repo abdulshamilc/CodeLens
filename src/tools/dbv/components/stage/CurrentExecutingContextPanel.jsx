@@ -50,12 +50,25 @@ function highlightJsLine(line) {
         </span>)}
     </>);
 }
-export function CurrentExecutingContextPanel({ ctx, env, heap, activeLine, allCodeLines, isLiveContext, onBackToLive, changedBindings = [], isMaximized = false, onToggleMaximize, onCollapse, }) {
+export function CurrentExecutingContextPanel({ ctx, env, heap, callStack = [], activeLine, allCodeLines, isLiveContext, onBackToLive, changedBindings = [], isMaximized = false, onToggleMaximize, onCollapse, }) {
     const [expandedRefs, setExpandedRefs] = useState({});
     const activeLineRef = useRef(null);
     const toggleRef = (refId) => {
         setExpandedRefs((prev) => ({ ...prev, [refId]: !prev[refId] }));
     };
+
+    // Find human-readable name for outer scope instead of raw env ID
+    const outerScopeName = useMemo(() => {
+        if (!ctx?.outerEnvId) return null;
+        if (ctx.outerEnvId === "env-global") return "Global";
+        const parentCtx = callStack.find(
+            (c) => c.variableEnvId === ctx.outerEnvId || c.lexicalEnvId === ctx.outerEnvId
+        );
+        if (parentCtx) {
+            return parentCtx.type === "Global" ? "Global" : `${parentCtx.name}()`;
+        }
+        return "Global";
+    }, [ctx?.outerEnvId, callStack]);
     // Auto-scroll active code line into view
     useEffect(() => {
         if (activeLineRef.current) {
@@ -103,15 +116,24 @@ export function CurrentExecutingContextPanel({ ctx, env, heap, activeLine, allCo
             return "null";
         if (typeof val === "string")
             return `"${val}"`;
+        if (typeof val === "number" || typeof val === "boolean")
+            return String(val);
         if (typeof val === "object" && val?.type === "ref") {
             const obj = heap[val.id];
             if (!obj)
                 return "[Object]";
-            if (obj.kind === "function")
-                return `ƒ ${obj.label}()`;
-            if (obj.kind === "array")
-                return `Array(${obj.properties ? Object.keys(obj.properties).length : 0})`;
-            return `{…}`;
+            if (obj.kind === "function") {
+                const fnName = obj.label || obj.properties?.name || "anonymous";
+                return `ƒ ${fnName}()`;
+            }
+            if (obj.kind === "array") {
+                const len = obj.properties ? (Array.isArray(obj.properties) ? obj.properties.length : (obj.properties.length ?? Object.keys(obj.properties).length)) : 0;
+                return `Array(${len})`;
+            }
+            if (obj.label && obj.label !== "Object") {
+                return obj.label;
+            }
+            return "{…}";
         }
         return String(val);
     };
@@ -183,12 +205,12 @@ export function CurrentExecutingContextPanel({ ctx, env, heap, activeLine, allCo
             </span>
           </Tooltip>
 
-          {ctx.outerEnvId && (<Tooltip content={`Outer Lexical Scope ID: ${ctx.outerEnvId}`}>
+          {outerScopeName && (<Tooltip content={`Outer Lexical Scope: ${outerScopeName} (${ctx.outerEnvId})`}>
               <span className="hidden @[600px]:inline px-2 py-0.5 rounded text-[11px]" style={{
                 background: "rgba(var(--color-border), 0.25)",
                 color: "rgb(var(--color-text-muted))",
             }}>
-                outer: {ctx.outerEnvId === "env-global" ? "global" : ctx.outerEnvId}
+                outer: <strong style={{ color: "rgb(var(--color-text))" }}>{outerScopeName}</strong>
               </span>
             </Tooltip>)}
 
@@ -251,8 +273,13 @@ export function CurrentExecutingContextPanel({ ctx, env, heap, activeLine, allCo
                 }}>
                     {/* Variable Name in stable palette color */}
                     <span className="font-bold flex items-center gap-1.5 break-all" style={{ color: varColor }}>
-                      <span>{name}</span>
-                      <span className="text-[10px] font-normal opacity-60">({binding.kind})</span>
+                      <span className="text-xs font-mono font-bold">{name}</span>
+                      <span className="text-[10px] font-mono px-1 py-0.2 rounded font-normal shrink-0" style={{
+                        background: "rgba(var(--color-border), 0.35)",
+                        color: "rgb(var(--color-text-muted))",
+                      }}>
+                        {binding.kind}
+                      </span>
                     </span>
 
                     {/* Variable Value with TDZ badge or pop-in animation */}
@@ -274,14 +301,34 @@ export function CurrentExecutingContextPanel({ ctx, env, heap, activeLine, allCo
                         </AnimatePresence>)}
 
                       {/* Expand toggle for Ref objects */}
-                      {typeof binding.value === "object" && binding.value?.type === "ref" && (<button onClick={() => toggleRef(binding.value.id)} className="text-[10px] px-1.5 py-0.5 rounded cursor-pointer transition-colors" style={{
+                      {typeof binding.value === "object" && binding.value?.type === "ref" && (<button onClick={() => toggleRef(binding.value.id)} className="text-[10px] px-1.5 py-0.5 rounded cursor-pointer transition-colors font-mono" style={{
                         background: "rgb(var(--color-surface2))",
                         color: "rgb(var(--color-text))",
                         border: "1px solid rgb(var(--color-border))",
                     }}>
-                          {expandedRefs[binding.value.id] ? "hide" : "ref"}
+                          {expandedRefs[binding.value.id] ? "hide" : "inspect"}
                         </button>)}
                     </div>
+
+                    {/* Expandable Properties for Ref Objects */}
+                    {typeof binding.value === "object" && binding.value?.type === "ref" && expandedRefs[binding.value.id] && heap[binding.value.id] && (
+                      <div className="w-full mt-2 pt-2 border-t text-[11px] font-mono space-y-1" style={{ borderColor: "rgba(var(--color-border), 0.45)" }}>
+                        <div className="flex items-center justify-between text-[10px] font-semibold" style={{ color: "rgb(var(--color-text-muted))" }}>
+                          <span>{heap[binding.value.id].kind}: {heap[binding.value.id].label || "Object"}</span>
+                          <span className="opacity-60">#{binding.value.id}</span>
+                        </div>
+                        {Object.entries(heap[binding.value.id].properties || {}).length === 0 ? (
+                          <div className="italic text-[10px]" style={{ color: "rgb(var(--color-text-muted))" }}>Empty object</div>
+                        ) : (
+                          Object.entries(heap[binding.value.id].properties || {}).map(([propKey, propVal]) => (
+                            <div key={propKey} className="flex items-center justify-between gap-2 px-1.5 py-0.5 rounded" style={{ background: "rgba(var(--color-surface), 0.5)" }}>
+                              <span className="font-semibold" style={{ color: "rgb(var(--color-accent))" }}>{propKey}:</span>
+                              <span style={{ color: "rgb(var(--color-text))" }}>{formatVal(propVal)}</span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
                   </motion.div>);
         }))}
           </div>
