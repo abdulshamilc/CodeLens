@@ -24,8 +24,8 @@ function rtToBinding(v) {
         return v;
     if (typeof v === "object" && v.__internal === "function")
         return mkRef(v.heapId);
-    if (typeof v === "object" && v.__internal === "builtin")
-        return `[built-in: ${v.name}]`;
+    if (typeof v === "object" && v !== null && v.__internal === "builtin")
+        return v;
     return String(v);
 }
 function rtToDisplay(v, heap) {
@@ -56,8 +56,8 @@ function rtToDisplay(v, heap) {
     }
     if (typeof v === "object" && v.__internal === "function")
         return `[Function: ${v.name}]`;
-    if (typeof v === "object" && v.__internal === "builtin")
-        return `[built-in: ${v.name}]`;
+    if ((typeof v === "object" || typeof v === "function") && v?.__internal === "builtin")
+        return `[built-in: ${v.fnName || v.name}]`;
     return String(v);
 }
 // ─── Signal types for control flow ────────────────────────────────────────────
@@ -69,8 +69,18 @@ class ReturnSignal {
 }
 class ThrowSignal {
     value;
-    constructor(value) {
+    node;
+    kind;
+    stack;
+    constructor(value, node = null, kind = "runtime", callStack = []) {
         this.value = value;
+        this.node = node;
+        this.kind = kind;
+        this.stack = Array.isArray(callStack) ? callStack.map(ctx => ({
+            fnName: ctx.name || "(anonymous)",
+            line: ctx.callSiteLine || ctx.sourceLine || 1,
+            column: ctx.callSiteColumn || 1,
+        })) : [];
     }
 }
 class BreakSignal {
@@ -85,10 +95,25 @@ class ContinueSignal {
         this.label = label;
     }
 }
+class AwaitSignal {
+    value;
+    node;
+    remainingStmts;
+    targetVar;
+    constructor(value, node) {
+        this.value = value;
+        this.node = node;
+        this.remainingStmts = [];
+        this.targetVar = null;
+    }
+}
 // ─── Main interpreter class ───────────────────────────────────────────────────
 export class Interpreter {
     s;
     builtins = {};
+    _currentNode = null;
+    _sourceCode = "";
+
     constructor(stepLimit = 20_000) {
         _id = 0;
         this.s = {
@@ -105,8 +130,107 @@ export class Interpreter {
             changedBindings: [],
         };
     }
+
+    buildSourceSnippet(source, line, column, endLine, endColumn) {
+        if (!source || !line) return "";
+        const lines = source.split("\n");
+        const targetIdx = line - 1;
+        if (targetIdx < 0 || targetIdx >= lines.length) return "";
+
+        const startIdx = Math.max(0, targetIdx - 1);
+        const endIdx = Math.min(lines.length - 1, targetIdx + 1);
+        const maxLineNumWidth = String(endIdx + 1).length;
+
+        const snippetLines = [];
+        for (let i = startIdx; i <= endIdx; i++) {
+            const lineNum = String(i + 1).padStart(maxLineNumWidth, " ");
+            snippetLines.push(`  ${lineNum} | ${lines[i]}`);
+            if (i === targetIdx) {
+                const pad = Math.max(0, (column ?? 1) - 1);
+                const lineLen = lines[i].length;
+                let span = 1;
+                if (endLine === line && endColumn > column) {
+                    span = Math.max(1, endColumn - column);
+                } else if (lineLen > pad) {
+                    span = Math.max(1, lineLen - pad);
+                }
+                snippetLines.push(`  ${" ".repeat(maxLineNumWidth)} | ${" ".repeat(pad)}${"^".repeat(Math.min(span, 60))}`);
+            }
+        }
+        return snippetLines.join("\n");
+    }
+
+    createThrowSignal(value, node = null, kind = "runtime") {
+        return new ThrowSignal(value, node || this._currentNode, kind, this.s.callStack);
+    }
+
+    buildDBVError(rawVal, node = null, kind = "runtime", capturedStack = null) {
+        let name = "Error";
+        let message = "";
+
+        if (isRef(rawVal) && this.s.heap[rawVal.id]) {
+            const obj = this.s.heap[rawVal.id];
+            name = obj.properties?.name || obj.label || "Error";
+            message = obj.properties?.message !== undefined ? String(obj.properties.message) : rtToDisplay(rawVal, this.s.heap);
+        } else if (typeof rawVal === "string") {
+            const match = rawVal.match(/^([A-Z][a-zA-Z0-9_]*Error):\s*(.*)$/);
+            if (match) {
+                name = match[1];
+                message = match[2];
+            } else {
+                message = rawVal;
+            }
+        } else if (rawVal && typeof rawVal === "object" && rawVal.name && rawVal.message) {
+            name = rawVal.name;
+            message = rawVal.message;
+        } else {
+            message = rtToDisplay(rawVal, this.s.heap);
+        }
+
+        // Clean message of any "Uncaught " prefix
+        message = message.replace(/^Uncaught\s+/, "");
+
+        const locNode = node || this._currentNode;
+        const line = locNode?.loc?.start?.line ?? 1;
+        const column = (locNode?.loc?.start?.column ?? 0) + 1;
+        const endLine = locNode?.loc?.end?.line ?? line;
+        const endColumn = (locNode?.loc?.end?.column !== undefined ? locNode.loc.end.column + 1 : column + 1);
+
+        let stack = [];
+        if (capturedStack && capturedStack.length > 0) {
+            stack = [...capturedStack].reverse();
+        } else {
+            for (let i = this.s.callStack.length - 1; i >= 0; i--) {
+                const ctx = this.s.callStack[i];
+                if (ctx) {
+                    stack.push({
+                        fnName: ctx.name || "(anonymous)",
+                        line: ctx.callSiteLine || ctx.sourceLine || line,
+                        column: ctx.callSiteColumn || 1,
+                    });
+                }
+            }
+        }
+
+        const sourceSnippet = this.buildSourceSnippet(this._sourceCode, line, column, endLine, endColumn);
+
+        return {
+            name,
+            message,
+            stack,
+            line,
+            column,
+            endLine,
+            endColumn,
+            kind,
+            sourceSnippet,
+        };
+    }
+
     // ─── Public entry point ────────────────────────────────────────────────────
     run(code) {
+        this._sourceCode = code;
+        this._currentNode = null;
         let ast;
         try {
             ast = acorn.parse(code, {
@@ -116,13 +240,26 @@ export class Interpreter {
             });
         }
         catch (err) {
+            const line = err.loc?.line ?? 1;
+            const column = (err.loc?.column ?? 0) + 1;
+            const cleanMsg = (err.message || "Syntax error").replace(/\s*\(\d+:\d+\)$/, "");
+            const snippet = this.buildSourceSnippet(code, line, column, line, column + 1);
+            const dbvErr = {
+                name: "SyntaxError",
+                message: cleanMsg,
+                stack: [],
+                line,
+                column,
+                endLine: line,
+                endColumn: column + 1,
+                kind: "parse",
+                sourceSnippet: snippet,
+            };
             const parseErr = {
                 index: 0,
-                nodeRange: err.loc
-                    ? { startLine: err.loc.line, endLine: err.loc.line, startCol: err.loc.column, endCol: err.loc.column }
-                    : null,
+                nodeRange: { startLine: line, endLine: line, startCol: column, endCol: column + 1 },
                 eventType: "throw",
-                explanation: `SyntaxError: ${err.message}`,
+                explanation: `SyntaxError: ${cleanMsg}`,
                 callStack: [],
                 environments: {},
                 heap: {},
@@ -130,15 +267,37 @@ export class Interpreter {
                 microtaskQueue: [],
                 macrotaskQueue: [],
                 eventLoopState: "idle",
-                consoleOutput: [],
+                consoleOutput: [{
+                    id: nextId("con"),
+                    method: "error",
+                    args: [`Uncaught SyntaxError: ${cleanMsg}`],
+                    stepIndex: 0,
+                    error: dbvErr,
+                }],
                 changedBindings: [],
-                error: { name: "SyntaxError", message: err.message, stack: [] },
+                error: dbvErr,
             };
             return [parseErr];
         }
-        // Create global environment
+        // Create intrinsics environment (hidden built-ins realm)
+        const intrinsicsEnvId = nextId("env");
+        this.s.environments[intrinsicsEnvId] = {
+            id: intrinsicsEnvId,
+            bindings: {},
+            outer: null,
+            isIntrinsics: true,
+        };
+        this.setupBuiltins(intrinsicsEnvId);
+
+        // Create global environment (user bindings only, inherits from intrinsics)
         const globalEnvId = nextId("env");
-        this.s.environments[globalEnvId] = { id: globalEnvId, bindings: {}, outer: null };
+        this.s.environments[globalEnvId] = {
+            id: globalEnvId,
+            bindings: {},
+            outer: intrinsicsEnvId,
+            isIntrinsics: false,
+        };
+
         // Create global execution context
         const globalCtx = {
             id: nextId("ctx"),
@@ -154,8 +313,7 @@ export class Interpreter {
         this.s.callStack = [globalCtx];
         // Record program-start step
         this.recordStep(null, "program-start", "JavaScript engine starts. Creating the Global Execution Context.");
-        // Setup built-ins
-        this.setupBuiltins(globalEnvId);
+
         // Creation phase: hoist all top-level declarations
         this.hoistDeclarations(ast.body, globalEnvId, globalEnvId, globalCtx);
         this.recordStep(null, "creation-phase", "Creation phase complete. var declarations are set to undefined, function declarations are fully hoisted, let/const are in the Temporal Dead Zone (TDZ).");
@@ -168,15 +326,17 @@ export class Interpreter {
         }
         catch (sig) {
             if (sig instanceof ThrowSignal) {
-                const msg = rtToDisplay(sig.value, this.s.heap);
+                const dbvErr = this.buildDBVError(sig.value, sig.node, sig.kind || "runtime", sig.stack);
+                const msg = `${dbvErr.name}: ${dbvErr.message}`;
                 this.s.consoleOutput.push({
                     id: nextId("con"),
                     method: "error",
                     args: [`Uncaught ${msg}`],
                     stepIndex: this.s.steps.length,
+                    error: dbvErr,
                 });
-                this.recordStep(null, "throw", `Uncaught error: ${msg}`, {
-                    error: { name: "Error", message: msg, stack: this.s.callStack.map((c) => c.name) },
+                this.recordStep(sig.node ? nodeRange(sig.node) : (this._currentNode ? nodeRange(this._currentNode) : null), "throw", `Uncaught error: ${msg}`, {
+                    error: dbvErr,
                 });
             }
         }
@@ -205,14 +365,39 @@ export class Interpreter {
                     this.s.heap[id] = { id, kind: "array", label: "Array", properties: props, prototype: null };
                     return mkRef(id);
                 }],
-            ["Object", (...a) => {
+            ["Object", (() => {
+                const objFn = (...a) => {
                     if (a[0] === null || a[0] === undefined) {
                         const id = nextId("heap");
                         this.s.heap[id] = { id, kind: "object", label: "Object", properties: {}, prototype: null };
                         return mkRef(id);
                     }
                     return a[0];
-                }],
+                };
+                objFn.__internal = "builtin";
+                objFn.fnName = "Object";
+                objFn.assign = {
+                    __internal: "builtin",
+                    name: "Object.assign",
+                    fn: (target, ...sources) => {
+                        if (!isRef(target)) return target;
+                        const targetObj = this.s.heap[target.id];
+                        if (!targetObj) return target;
+                        for (const src of sources) {
+                            if (isRef(src)) {
+                                const srcObj = this.s.heap[src.id];
+                                if (srcObj?.properties) {
+                                    Object.assign(targetObj.properties, srcObj.properties);
+                                }
+                            } else if (typeof src === "object" && src !== null) {
+                                Object.assign(targetObj.properties, src);
+                            }
+                        }
+                        return target;
+                    }
+                };
+                return objFn;
+            })()],
             ["Math", () => {
                     const id = nextId("heap");
                     this.s.heap[id] = {
@@ -222,6 +407,31 @@ export class Interpreter {
                     return mkRef(id);
                 }],
             ["JSON", () => undefined],
+            ["Error", (...a) => {
+                    const id = nextId("heap");
+                    this.s.heap[id] = { id, kind: "object", label: "Error", properties: { name: "Error", message: String(a[0] ?? "") }, prototype: null };
+                    return mkRef(id);
+                }],
+            ["TypeError", (...a) => {
+                    const id = nextId("heap");
+                    this.s.heap[id] = { id, kind: "object", label: "TypeError", properties: { name: "TypeError", message: String(a[0] ?? "") }, prototype: null };
+                    return mkRef(id);
+                }],
+            ["RangeError", (...a) => {
+                    const id = nextId("heap");
+                    this.s.heap[id] = { id, kind: "object", label: "RangeError", properties: { name: "RangeError", message: String(a[0] ?? "") }, prototype: null };
+                    return mkRef(id);
+                }],
+            ["ReferenceError", (...a) => {
+                    const id = nextId("heap");
+                    this.s.heap[id] = { id, kind: "object", label: "ReferenceError", properties: { name: "ReferenceError", message: String(a[0] ?? "") }, prototype: null };
+                    return mkRef(id);
+                }],
+            ["SyntaxError", (...a) => {
+                    const id = nextId("heap");
+                    this.s.heap[id] = { id, kind: "object", label: "SyntaxError", properties: { name: "SyntaxError", message: String(a[0] ?? "") }, prototype: null };
+                    return mkRef(id);
+                }],
             ["setTimeout", (...a) => {
                     const id = nextId("wa");
                     const cb = a[0];
@@ -232,7 +442,36 @@ export class Interpreter {
                     this.recordStep(null, "enqueue-task", `setTimeout() called with ${ms}ms delay. The callback is sent to Web APIs and will be queued in the Callback Queue after ${ms}ms.`);
                     return id;
                 }],
-            ["Promise", () => undefined],
+            ["queueMicrotask", (...a) => {
+                    const id = nextId("micro");
+                    const cb = a[0];
+                    this.s.microtaskQueue.push({ id, kind: "microtask", label: "queueMicrotask cb", callback: cb });
+                    this.recordStep(null, "enqueue-task", "queueMicrotask() queued a microtask into the Microtask Queue (High Priority).");
+                    return undefined;
+                }],
+            ["clearTimeout", (id) => {
+                    this.s.webApis = this.s.webApis.filter((w) => w.id !== id);
+                    this.s.macrotaskQueue = this.s.macrotaskQueue.filter((m) => m.webApiId !== id);
+                    this.recordStep(null, "event-loop-tick", `clearTimeout() canceled task.`);
+                    return undefined;
+                }],
+            ["setInterval", (...a) => {
+                    const id = nextId("wa");
+                    const cb = a[0];
+                    const ms = Number(a[1]) || 0;
+                    const cbRef = isRef(cb) ? cb.id : undefined;
+                    this.s.webApis.push({ id, kind: "setInterval", label: `setInterval(${ms}ms)`, remainingMs: ms, callbackRef: cbRef });
+                    this.s.macrotaskQueue.push({ id: nextId("mt"), kind: "macrotask", label: `setInterval cb (${ms}ms)`, callback: cb, webApiId: id });
+                    this.recordStep(null, "enqueue-task", `setInterval() registered in Web APIs.`);
+                    return id;
+                }],
+            ["clearInterval", (id) => {
+                    this.s.webApis = this.s.webApis.filter((w) => w.id !== id);
+                    this.s.macrotaskQueue = this.s.macrotaskQueue.filter((m) => m.webApiId !== id);
+                    this.recordStep(null, "event-loop-tick", `clearInterval() canceled interval.`);
+                    return undefined;
+                }],
+            ["Promise", this.getPromiseConstructor()],
         ];
         for (const [name, fn] of builtins) {
             this.builtins[name] = fn;
@@ -243,32 +482,556 @@ export class Interpreter {
             };
         }
     }
-    // ─── Drain Event Loop ──────────────────────────────────────────────────────
-    drainEventLoop() {
-        while (this.s.macrotaskQueue.length > 0) {
-            if (this.s.steps.length >= this.s.stepLimit)
-                break;
-            const task = this.s.macrotaskQueue.shift();
-            this.s.webApis = this.s.webApis.filter((w) => w.id !== task.webApiId);
-            this.s.eventLoopState = "pulling-macrotask";
-            this.recordStep(null, "event-loop-tick", `Event Loop: moving task "${task.label}" from Callback Queue onto Call Stack.`);
-            const cb = task.callback;
-            if (cb) {
-                try {
-                    this.invokeCallable(cb, []);
-                }
-                catch (sig) {
-                    if (sig instanceof ThrowSignal) {
-                        const msg = rtToDisplay(sig.value, this.s.heap);
-                        this.s.consoleOutput.push({
-                            id: nextId("con"),
-                            method: "error",
-                            args: [`Uncaught ${msg}`],
-                            stepIndex: this.s.steps.length,
-                        });
-                        this.recordStep(null, "throw", `Uncaught error in task callback: ${msg}`);
+    // ─── Spec-Accurate Promise Implementation ──────────────────────────────────
+    getPromiseConstructor() {
+        const promiseCtor = (executor) => this.constructPromise(executor);
+        promiseCtor.__internal = "builtin";
+        promiseCtor.fnName = "Promise";
+        promiseCtor.resolve = {
+            __internal: "builtin",
+            name: "Promise.resolve",
+            fn: (val) => {
+                if (isRef(val) && this.s.heap[val.id]?.kind === "promise") return val;
+                const id = nextId("heap");
+                this.s.heap[id] = {
+                    id, kind: "promise", label: "Promise (pending)", state: "pending",
+                    value: undefined, reactions: [], handled: false, prototype: null, properties: {}
+                };
+                this.fulfillPromiseOrAdopt(id, val);
+                return mkRef(id);
+            }
+        };
+        promiseCtor.reject = {
+            __internal: "builtin",
+            name: "Promise.reject",
+            fn: (err) => {
+                const id = nextId("heap");
+                this.s.heap[id] = {
+                    id, kind: "promise", label: "Promise (rejected)", state: "rejected",
+                    value: err, reactions: [], handled: false, prototype: null, properties: {}
+                };
+                return mkRef(id);
+            }
+        };
+        promiseCtor.all = {
+            __internal: "builtin",
+            name: "Promise.all",
+            fn: (iterable) => this.promiseAll(iterable)
+        };
+        promiseCtor.allSettled = {
+            __internal: "builtin",
+            name: "Promise.allSettled",
+            fn: (iterable) => this.promiseAllSettled(iterable)
+        };
+        promiseCtor.race = {
+            __internal: "builtin",
+            name: "Promise.race",
+            fn: (iterable) => this.promiseRace(iterable)
+        };
+        promiseCtor.any = {
+            __internal: "builtin",
+            name: "Promise.any",
+            fn: (iterable) => this.promiseAny(iterable)
+        };
+        return promiseCtor;
+    }
+    constructPromise(executor, callNode) {
+        const promiseId = nextId("heap");
+        this.s.heap[promiseId] = {
+            id: promiseId,
+            kind: "promise",
+            label: "Promise (pending)",
+            state: "pending",
+            value: undefined,
+            reactions: [],
+            handled: false,
+            prototype: null,
+            properties: {},
+        };
+        const promiseRef = mkRef(promiseId);
+
+        if (!this.isCallable(executor)) {
+            throw this.createThrowSignal(`TypeError: Promise resolver ${rtToDisplay(executor, this.s.heap)} is not a function`, callNode);
+        }
+
+        let alreadySettled = false;
+        const resolve = (resolution) => {
+            if (alreadySettled) return;
+            alreadySettled = true;
+            this.fulfillPromiseOrAdopt(promiseId, resolution);
+        };
+        const reject = (reason) => {
+            if (alreadySettled) return;
+            alreadySettled = true;
+            this.rejectPromise(promiseId, reason);
+        };
+
+        const resolveCallable = {
+            __internal: "builtin",
+            name: "resolve",
+            fn: resolve,
+        };
+        const rejectCallable = {
+            __internal: "builtin",
+            name: "reject",
+            fn: reject,
+        };
+
+        try {
+            this.call(executor, undefined, [resolveCallable, rejectCallable], callNode);
+        } catch (err) {
+            const errVal = err instanceof ThrowSignal ? err.value : err;
+            reject(errVal);
+        }
+
+        return promiseRef;
+    }
+    fulfillPromiseOrAdopt(promiseId, resolution) {
+        const p = this.s.heap[promiseId];
+        if (!p || p.state !== "pending") return;
+
+        if (isRef(resolution) && resolution.id === promiseId) {
+            this.rejectPromise(promiseId, "TypeError: Chaining cycle detected for promise #<Promise>");
+            return;
+        }
+
+        // Check if resolution is a thenable (has a .then method)
+        let thenMethod = null;
+        if (isRef(resolution) || (typeof resolution === "object" && resolution !== null)) {
+            try {
+                thenMethod = this.getMemberProperty(resolution, "then");
+            } catch {
+                // ignore
+            }
+        }
+
+        if (thenMethod && this.isCallable(thenMethod)) {
+            // Extra microtask hop to adopt thenable
+            this.s.microtaskQueue.push({
+                id: nextId("micro"),
+                kind: "microtask",
+                label: "promiseResolveThenableJob",
+                callback: {
+                    __internal: "builtin",
+                    name: "resolveThenable",
+                    fn: () => {
+                        let settled = false;
+                        const resFn = {
+                            __internal: "builtin",
+                            name: "resolve",
+                            fn: (v) => {
+                                if (!settled) {
+                                    settled = true;
+                                    this.fulfillPromiseOrAdopt(promiseId, v);
+                                }
+                            }
+                        };
+                        const rejFn = {
+                            __internal: "builtin",
+                            name: "reject",
+                            fn: (r) => {
+                                if (!settled) {
+                                    settled = true;
+                                    this.rejectPromise(promiseId, r);
+                                }
+                            }
+                        };
+                        try {
+                            this.call(thenMethod, resolution, [resFn, rejFn]);
+                        } catch (err) {
+                            if (!settled) {
+                                settled = true;
+                                this.rejectPromise(promiseId, err instanceof ThrowSignal ? err.value : err);
+                            }
+                        }
                     }
                 }
+            });
+            return;
+        }
+
+        p.state = "fulfilled";
+        p.value = resolution;
+        p.label = "Promise (fulfilled)";
+        this.recordStep(null, "promise-settled", `Promise fulfilled with value \`${rtToDisplay(resolution, this.s.heap)}\`.`);
+
+        const reactions = p.reactions || [];
+        p.reactions = [];
+        for (const r of reactions) {
+            this.queuePromiseReactionJob(r, "fulfilled", resolution);
+        }
+    }
+    rejectPromise(promiseId, reason) {
+        const p = this.s.heap[promiseId];
+        if (!p || p.state !== "pending") return;
+
+        p.state = "rejected";
+        p.value = reason;
+        p.label = "Promise (rejected)";
+        this.recordStep(null, "promise-settled", `Promise rejected with reason \`${rtToDisplay(reason, this.s.heap)}\`.`);
+
+        const reactions = p.reactions || [];
+        if (reactions.length > 0) {
+            p.handled = true;
+        }
+        p.reactions = [];
+        for (const r of reactions) {
+            this.queuePromiseReactionJob(r, "rejected", reason);
+        }
+    }
+    queuePromiseReactionJob(reaction, state, valueOrReason) {
+        const isFulfilled = state === "fulfilled";
+        const handler = isFulfilled ? reaction.onFulfilled : reaction.onRejected;
+        const taskLabel = isFulfilled ? "then callback" : "catch callback";
+
+        this.s.microtaskQueue.push({
+            id: nextId("micro"),
+            kind: "microtask",
+            label: taskLabel,
+            callback: {
+                __internal: "builtin",
+                name: isFulfilled ? "thenReaction" : "catchReaction",
+                fn: () => {
+                    if (!reaction.childId) return;
+                    if (isFulfilled) {
+                        if (this.isCallable(handler)) {
+                            try {
+                                const res = this.call(handler, undefined, [valueOrReason]);
+                                this.fulfillPromiseOrAdopt(reaction.childId, res);
+                            } catch (err) {
+                                const errVal = err instanceof ThrowSignal ? err.value : err;
+                                this.rejectPromise(reaction.childId, errVal);
+                            }
+                        } else {
+                            this.fulfillPromiseOrAdopt(reaction.childId, valueOrReason);
+                        }
+                    } else {
+                        // Rejection path
+                        if (this.isCallable(handler)) {
+                            try {
+                                const res = this.call(handler, undefined, [valueOrReason]);
+                                // Recovery: catch handler resolved derived promise
+                                this.fulfillPromiseOrAdopt(reaction.childId, res);
+                            } catch (err) {
+                                const errVal = err instanceof ThrowSignal ? err.value : err;
+                                this.rejectPromise(reaction.childId, errVal);
+                            }
+                        } else {
+                            // Pass-through rejection
+                            this.rejectPromise(reaction.childId, valueOrReason);
+                        }
+                    }
+                }
+            }
+        });
+        this.recordStep(null, "enqueue-task", `Promise: registered reaction queued as microtask "${taskLabel}".`);
+    }
+    promiseAll(iterable) {
+        const id = nextId("heap");
+        this.s.heap[id] = {
+            id, kind: "promise", label: "Promise (pending)", state: "pending",
+            value: undefined, reactions: [], handled: false, prototype: null, properties: {}
+        };
+        let items = [];
+        if (isRef(iterable) && this.s.heap[iterable.id]?.kind === "array") {
+            const len = Number(this.s.heap[iterable.id].properties.length) || 0;
+            items = Array.from({ length: len }, (_, i) => this.s.heap[iterable.id].properties[i]);
+        } else if (Array.isArray(iterable)) {
+            items = iterable;
+        }
+        if (items.length === 0) {
+            const resArrId = nextId("heap");
+            this.s.heap[resArrId] = { id: resArrId, kind: "array", label: "Array", properties: { length: 0 }, prototype: null };
+            this.fulfillPromiseOrAdopt(id, mkRef(resArrId));
+            return mkRef(id);
+        }
+        const results = new Array(items.length);
+        let remaining = items.length;
+        let settled = false;
+        items.forEach((item, index) => {
+            const itemPromise = (isRef(item) && this.s.heap[item.id]?.kind === "promise")
+                ? item
+                : this.builtins["Promise"].resolve.fn(item);
+            const thenFn = this.getMemberProperty(itemPromise, "then");
+            this.call(thenFn, itemPromise, [
+                {
+                    __internal: "builtin",
+                    name: `allResolve_${index}`,
+                    fn: (val) => {
+                        if (settled) return;
+                        results[index] = val;
+                        remaining--;
+                        if (remaining === 0) {
+                            settled = true;
+                            const resArrId = nextId("heap");
+                            const props = { length: results.length };
+                            results.forEach((v, i) => (props[i] = v));
+                            this.s.heap[resArrId] = { id: resArrId, kind: "array", label: "Array", properties: props, prototype: null };
+                            this.fulfillPromiseOrAdopt(id, mkRef(resArrId));
+                        }
+                    }
+                },
+                {
+                    __internal: "builtin",
+                    name: `allReject_${index}`,
+                    fn: (err) => {
+                        if (settled) return;
+                        settled = true;
+                        this.rejectPromise(id, err);
+                    }
+                }
+            ]);
+        });
+        return mkRef(id);
+    }
+    promiseAllSettled(iterable) {
+        const id = nextId("heap");
+        this.s.heap[id] = {
+            id, kind: "promise", label: "Promise (pending)", state: "pending",
+            value: undefined, reactions: [], handled: false, prototype: null, properties: {}
+        };
+        let items = [];
+        if (isRef(iterable) && this.s.heap[iterable.id]?.kind === "array") {
+            const len = Number(this.s.heap[iterable.id].properties.length) || 0;
+            items = Array.from({ length: len }, (_, i) => this.s.heap[iterable.id].properties[i]);
+        } else if (Array.isArray(iterable)) {
+            items = iterable;
+        }
+        if (items.length === 0) {
+            const resArrId = nextId("heap");
+            this.s.heap[resArrId] = { id: resArrId, kind: "array", label: "Array", properties: { length: 0 }, prototype: null };
+            this.fulfillPromiseOrAdopt(id, mkRef(resArrId));
+            return mkRef(id);
+        }
+        const results = new Array(items.length);
+        let remaining = items.length;
+        items.forEach((item, index) => {
+            const itemPromise = (isRef(item) && this.s.heap[item.id]?.kind === "promise")
+                ? item
+                : this.builtins["Promise"].resolve.fn(item);
+            const thenFn = this.getMemberProperty(itemPromise, "then");
+            this.call(thenFn, itemPromise, [
+                {
+                    __internal: "builtin",
+                    name: `allSettledFulfilled_${index}`,
+                    fn: (val) => {
+                        const oId = nextId("heap");
+                        this.s.heap[oId] = { id: oId, kind: "object", label: "Object", properties: { status: "fulfilled", value: val }, prototype: null };
+                        results[index] = mkRef(oId);
+                        remaining--;
+                        if (remaining === 0) {
+                            const arrId = nextId("heap");
+                            const props = { length: results.length };
+                            results.forEach((v, i) => (props[i] = v));
+                            this.s.heap[arrId] = { id: arrId, kind: "array", label: "Array", properties: props, prototype: null };
+                            this.fulfillPromiseOrAdopt(id, mkRef(arrId));
+                        }
+                    }
+                },
+                {
+                    __internal: "builtin",
+                    name: `allSettledRejected_${index}`,
+                    fn: (err) => {
+                        const oId = nextId("heap");
+                        this.s.heap[oId] = { id: oId, kind: "object", label: "Object", properties: { status: "rejected", reason: err }, prototype: null };
+                        results[index] = mkRef(oId);
+                        remaining--;
+                        if (remaining === 0) {
+                            const arrId = nextId("heap");
+                            const props = { length: results.length };
+                            results.forEach((v, i) => (props[i] = v));
+                            this.s.heap[arrId] = { id: arrId, kind: "array", label: "Array", properties: props, prototype: null };
+                            this.fulfillPromiseOrAdopt(id, mkRef(arrId));
+                        }
+                    }
+                }
+            ]);
+        });
+        return mkRef(id);
+    }
+    promiseRace(iterable) {
+        const id = nextId("heap");
+        this.s.heap[id] = {
+            id, kind: "promise", label: "Promise (pending)", state: "pending",
+            value: undefined, reactions: [], handled: false, prototype: null, properties: {}
+        };
+        let items = [];
+        if (isRef(iterable) && this.s.heap[iterable.id]?.kind === "array") {
+            const len = Number(this.s.heap[iterable.id].properties.length) || 0;
+            items = Array.from({ length: len }, (_, i) => this.s.heap[iterable.id].properties[i]);
+        } else if (Array.isArray(iterable)) {
+            items = iterable;
+        }
+        items.forEach((item) => {
+            const itemPromise = (isRef(item) && this.s.heap[item.id]?.kind === "promise")
+                ? item
+                : this.builtins["Promise"].resolve.fn(item);
+            const thenFn = this.getMemberProperty(itemPromise, "then");
+            this.call(thenFn, itemPromise, [
+                { __internal: "builtin", name: "raceResolve", fn: (v) => this.fulfillPromiseOrAdopt(id, v) },
+                { __internal: "builtin", name: "raceReject", fn: (r) => this.rejectPromise(id, r) }
+            ]);
+        });
+        return mkRef(id);
+    }
+    promiseAny(iterable) {
+        const id = nextId("heap");
+        this.s.heap[id] = {
+            id, kind: "promise", label: "Promise (pending)", state: "pending",
+            value: undefined, reactions: [], handled: false, prototype: null, properties: {}
+        };
+        let items = [];
+        if (isRef(iterable) && this.s.heap[iterable.id]?.kind === "array") {
+            const len = Number(this.s.heap[iterable.id].properties.length) || 0;
+            items = Array.from({ length: len }, (_, i) => this.s.heap[iterable.id].properties[i]);
+        } else if (Array.isArray(iterable)) {
+            items = iterable;
+        }
+        if (items.length === 0) {
+            const aggId = nextId("heap");
+            this.s.heap[aggId] = {
+                id: aggId,
+                kind: "object",
+                label: "AggregateError",
+                properties: {
+                    name: "AggregateError",
+                    message: "All promises were rejected",
+                    errors: [],
+                },
+                prototype: null,
+            };
+            this.rejectPromise(id, mkRef(aggId));
+            return mkRef(id);
+        }
+        let remaining = items.length;
+        const errors = new Array(items.length);
+        let settled = false;
+        items.forEach((item, index) => {
+            const itemPromise = (isRef(item) && this.s.heap[item.id]?.kind === "promise")
+                ? item
+                : this.builtins["Promise"].resolve.fn(item);
+            const thenFn = this.getMemberProperty(itemPromise, "then");
+            this.call(thenFn, itemPromise, [
+                {
+                    __internal: "builtin",
+                    name: `anyResolve_${index}`,
+                    fn: (v) => {
+                        if (!settled) {
+                            settled = true;
+                            this.fulfillPromiseOrAdopt(id, v);
+                        }
+                    }
+                },
+                {
+                    __internal: "builtin",
+                    name: `anyReject_${index}`,
+                    fn: (err) => {
+                        if (settled) return;
+                        errors[index] = err;
+                        remaining--;
+                        if (remaining === 0) {
+                            settled = true;
+                            const aggId = nextId("heap");
+                            this.s.heap[aggId] = {
+                                id: aggId,
+                                kind: "object",
+                                label: "AggregateError",
+                                properties: {
+                                    name: "AggregateError",
+                                    message: "All promises were rejected",
+                                    errors: errors,
+                                },
+                                prototype: null,
+                            };
+                            this.rejectPromise(id, mkRef(aggId));
+                        }
+                    }
+                }
+            ]);
+        });
+        return mkRef(id);
+    }
+    // ─── Resolve Promise Helper ───────────────────────────────────────────────
+    resolvePromise(promiseId, val) {
+        this.fulfillPromiseOrAdopt(promiseId, val);
+    }
+    // ─── Drain Event Loop ──────────────────────────────────────────────────────
+    drainEventLoop() {
+        while (this.s.microtaskQueue.length > 0 || this.s.macrotaskQueue.length > 0) {
+            if (this.s.steps.length >= this.s.stepLimit)
+                break;
+            // 1. Drain ALL microtasks before any macrotask
+            if (this.s.microtaskQueue.length > 0) {
+                const task = this.s.microtaskQueue.shift();
+                this.s.eventLoopState = "draining-microtask";
+                this.recordStep(null, "event-loop-tick", `Event Loop: moving microtask "${task.label}" from Microtask Queue onto Call Stack (draining microtasks before macrotasks).`);
+                const cb = task.callback;
+                if (cb) {
+                    try {
+                        this.call(cb, undefined, task.arg !== undefined ? [task.arg] : []);
+                    }
+                    catch (sig) {
+                        if (sig instanceof ThrowSignal) {
+                            const dbvErr = this.buildDBVError(sig.value, sig.node, sig.kind || "runtime", sig.stack);
+                            const msg = `${dbvErr.name}: ${dbvErr.message}`;
+                            this.s.consoleOutput.push({
+                                id: nextId("con"),
+                                method: "error",
+                                args: [`Uncaught ${msg}`],
+                                stepIndex: this.s.steps.length,
+                                error: dbvErr,
+                            });
+                            this.recordStep(sig.node ? nodeRange(sig.node) : null, "throw", `Uncaught error in microtask: ${msg}`, { error: dbvErr });
+                        }
+                    }
+                }
+                continue;
+            }
+            // 2. Macrotask (Callback Queue)
+            if (this.s.macrotaskQueue.length > 0) {
+                const task = this.s.macrotaskQueue.shift();
+                this.s.webApis = this.s.webApis.filter((w) => w.id !== task.webApiId);
+                this.s.eventLoopState = "pulling-macrotask";
+                this.recordStep(null, "event-loop-tick", `Event Loop: moving task "${task.label}" from Callback Queue onto Call Stack.`);
+                const cb = task.callback;
+                if (cb) {
+                    try {
+                        this.call(cb, undefined, []);
+                    }
+                    catch (sig) {
+                        if (sig instanceof ThrowSignal) {
+                            const dbvErr = this.buildDBVError(sig.value, sig.node, sig.kind || "runtime", sig.stack);
+                            const msg = `${dbvErr.name}: ${dbvErr.message}`;
+                            this.s.consoleOutput.push({
+                                id: nextId("con"),
+                                method: "error",
+                                args: [`Uncaught ${msg}`],
+                                stepIndex: this.s.steps.length,
+                                error: dbvErr,
+                            });
+                            this.recordStep(sig.node ? nodeRange(sig.node) : null, "throw", `Uncaught error in task callback: ${msg}`, { error: dbvErr });
+                        }
+                    }
+                }
+            }
+        }
+        // Check unhandled rejections after microtask checkpoint
+        for (const obj of Object.values(this.s.heap)) {
+            if (obj && obj.kind === "promise" && obj.state === "rejected" && !obj.handled && (!obj.reactions || obj.reactions.length === 0)) {
+                obj.handled = true;
+                const dbvErr = this.buildDBVError(obj.value, null, "unhandledrejection");
+                dbvErr.name = dbvErr.name === "Error" ? "UnhandledPromiseRejection" : dbvErr.name;
+                const reason = rtToDisplay(obj.value, this.s.heap);
+                this.s.consoleOutput.push({
+                    id: nextId("con"),
+                    method: "error",
+                    args: [`Uncaught (in promise) ${reason}`],
+                    stepIndex: this.s.steps.length,
+                    error: dbvErr,
+                });
+                this.recordStep(null, "unhandled-rejection", `Uncaught (in promise) ${reason}`, {
+                    error: dbvErr,
+                });
             }
         }
         this.s.eventLoopState = "idle";
@@ -306,19 +1069,33 @@ export class Interpreter {
     // ─── Execute a list of statements ─────────────────────────────────────────
     execBody(body, envId) {
         let last = undefined;
-        for (const stmt of body) {
+        for (let i = 0; i < body.length; i++) {
+            const stmt = body[i];
             if (this.s.steps.length >= this.s.stepLimit) {
-                throw new ThrowSignal("Step limit exceeded (possible infinite loop)");
+                throw this.createThrowSignal("Step limit exceeded (possible infinite loop)", stmt, "step_limit");
             }
-            last = this.execStatement(stmt, envId);
-            if (last instanceof ReturnSignal || last instanceof BreakSignal || last instanceof ContinueSignal) {
-                return last;
+            try {
+                last = this.execStatement(stmt, envId);
+                if (last instanceof ReturnSignal || last instanceof BreakSignal || last instanceof ContinueSignal) {
+                    return last;
+                }
+            } catch (err) {
+                if (err instanceof AwaitSignal) {
+                    err.remainingStmts = body.slice(i + 1);
+                    if (stmt.type === "VariableDeclaration" && stmt.declarations?.[0]?.init === err.node) {
+                        err.targetVar = stmt.declarations[0];
+                    }
+                    throw err;
+                }
+                throw err;
             }
         }
         return last;
     }
     // ─── Statement execution ───────────────────────────────────────────────────
     execStatement(node, envId) {
+        if (!node) return undefined;
+        this._currentNode = node;
         switch (node.type) {
             case "VariableDeclaration": return this.execVarDecl(node, envId);
             case "ExpressionStatement": {
@@ -344,11 +1121,12 @@ export class Interpreter {
                 const ts = node;
                 const val = this.evalExpr(ts.argument, envId);
                 this.recordStep(nodeRange(node), "throw", `throw: \`${rtToDisplay(val, this.s.heap)}\` is thrown.`);
-                throw new ThrowSignal(val);
+                throw this.createThrowSignal(val, ts);
             }
             case "BreakStatement": return new BreakSignal(node.label?.name);
             case "ContinueStatement": return new ContinueSignal(node.label?.name);
             case "SwitchStatement": return this.execSwitch(node, envId);
+            case "ClassDeclaration": return this.execClassDecl(node, envId);
             case "EmptyStatement": return undefined;
             case "LabeledStatement": return this.execStatement(node.body, envId);
             case "DoWhileStatement": return this.execDoWhile(node, envId);
@@ -361,19 +1139,19 @@ export class Interpreter {
     execVarDecl(node, envId) {
         for (const decl of node.declarations) {
             const initVal = decl.init ? this.evalExpr(decl.init, envId) : undefined;
-            const names = collectPatternNames(decl.id);
-            for (const name of names) {
-                const old = this.lookupBinding(name, envId);
+            if (decl.id.type === "Identifier") {
+                const name = decl.id.name;
                 if (node.kind === "var") {
-                    // var: update in place (already hoisted as undefined)
                     this.updateBinding(name, envId, "initialized", initVal);
                     this.recordStep(nodeRange(decl), "assign", `\`var ${name}\` is assigned the value \`${rtToDisplay(initVal, this.s.heap)}\`. (It was already hoisted as \`undefined\`.)`);
                 }
                 else {
-                    // let/const: transition from TDZ to initialized in target envId
                     this.setBinding(envId, name, node.kind, "initialized", initVal);
                     this.recordStep(nodeRange(decl), "declare", `\`${node.kind} ${name}\` is initialized to \`${rtToDisplay(initVal, this.s.heap)}\`. It is now accessible. (TDZ period is over.)`);
                 }
+            }
+            else {
+                this.assignPattern(decl.id, initVal, node.kind, envId, decl);
             }
         }
         return undefined;
@@ -422,7 +1200,7 @@ export class Interpreter {
         let iterations = 0;
         while (true) {
             if (this.s.steps.length >= this.s.stepLimit)
-                break;
+                throw this.createThrowSignal("Step limit exceeded (possible infinite loop)", node, "step_limit");
             const test = this.evalExpr(node.test, envId);
             const bool = Boolean(test);
             this.recordStep(nodeRange(node), "expression-eval", `while loop iteration ${++iterations}: condition \`${rtToDisplay(test, this.s.heap)}\` is ${bool ? "truthy" : "falsy"}.`);
@@ -442,7 +1220,7 @@ export class Interpreter {
         let iterations = 0;
         do {
             if (this.s.steps.length >= this.s.stepLimit)
-                break;
+                throw this.createThrowSignal("Step limit exceeded (possible infinite loop)", node, "step_limit");
             const result = this.execStatement(node.body, envId);
             if (result instanceof ReturnSignal)
                 return result;
@@ -473,7 +1251,7 @@ export class Interpreter {
         let iterations = 0;
         while (true) {
             if (this.s.steps.length >= this.s.stepLimit)
-                break;
+                throw this.createThrowSignal("Step limit exceeded (possible infinite loop)", node, "step_limit");
             // Each iteration of a lexical loop gets its own environment record
             let iterEnvId = forEnvId;
             if (isLexical) {
@@ -520,7 +1298,7 @@ export class Interpreter {
         }
         for (let i = 0; i < items.length; i++) {
             if (this.s.steps.length >= this.s.stepLimit)
-                break;
+                throw this.createThrowSignal("Step limit exceeded (possible infinite loop)", node, "step_limit");
             const loopEnvId = nextId("env");
             this.s.environments[loopEnvId] = { id: loopEnvId, bindings: {}, outer: envId };
             const left = node.left;
@@ -549,7 +1327,7 @@ export class Interpreter {
         }
         for (const key of keys) {
             if (this.s.steps.length >= this.s.stepLimit)
-                break;
+                throw this.createThrowSignal("Step limit exceeded (possible infinite loop)", node, "step_limit");
             const loopEnvId = nextId("env");
             this.s.environments[loopEnvId] = { id: loopEnvId, bindings: {}, outer: envId };
             const left = node.left;
@@ -580,6 +1358,11 @@ export class Interpreter {
                 thrown = true;
                 thrownVal = sig.value;
                 this.recordStep(nodeRange(node), "catch", `Exception caught: \`${rtToDisplay(thrownVal, this.s.heap)}\`. Entering catch block.`);
+            }
+            else if (sig instanceof AwaitSignal) {
+                sig.tryNode = node;
+                sig.tryEnvId = envId;
+                throw sig;
             }
             else {
                 throw sig;
@@ -649,8 +1432,10 @@ export class Interpreter {
     }
     // ─── Expression evaluation ─────────────────────────────────────────────────
     evalExpr(node, envId) {
+        if (!node) return undefined;
+        this._currentNode = node;
         if (this.s.steps.length >= this.s.stepLimit) {
-            throw new ThrowSignal("Step limit exceeded (possible infinite loop)");
+            throw this.createThrowSignal("Step limit exceeded (possible infinite loop)", node, "step_limit");
         }
         switch (node.type) {
             case "Literal": {
@@ -692,17 +1477,45 @@ export class Interpreter {
             }
             case "UnaryExpression": {
                 const ue = node;
+                if (ue.operator === "typeof" && ue.argument.type === "Identifier") {
+                    try {
+                        const val = this.resolveIdentifier(ue.argument.name, envId, node);
+                        return this.applyUnaryOp("typeof", val);
+                    } catch (err) {
+                        if (err instanceof ThrowSignal && String(err.value).includes("is not defined")) {
+                            return "undefined";
+                        }
+                        throw err; // TDZ errors will still throw as expected!
+                    }
+                }
                 const arg = this.evalExpr(ue.argument, envId);
                 return this.applyUnaryOp(ue.operator, arg);
             }
             case "UpdateExpression": {
                 const upe = node;
-                const name = upe.argument.name;
-                const old = this.resolveIdentifier(name, envId, node);
-                const newVal = upe.operator === "++" ? old + 1 : old - 1;
-                this.updateBinding(name, envId, "initialized", newVal);
-                this.recordStep(nodeRange(node), "assign", `${upe.operator === "++" ? "Increment" : "Decrement"}: \`${name}\` ${upe.operator === "++" ? "incremented from" : "decremented from"} ${old} to ${newVal}.`);
-                return upe.prefix ? newVal : old;
+                if (upe.argument.type === "Identifier") {
+                    const name = upe.argument.name;
+                    const old = Number(this.resolveIdentifier(name, envId, node)) || 0;
+                    const newVal = upe.operator === "++" ? old + 1 : old - 1;
+                    this.updateBinding(name, envId, "initialized", newVal);
+                    this.recordStep(nodeRange(node), "assign", `${upe.operator === "++" ? "Increment" : "Decrement"}: \`${name}\` ${upe.operator === "++" ? "incremented from" : "decremented from"} ${old} to ${newVal}.`);
+                    return upe.prefix ? newVal : old;
+                } else if (upe.argument.type === "MemberExpression") {
+                    const me = upe.argument;
+                    const obj = this.evalExpr(me.object, envId);
+                    const prop = me.computed ? String(this.evalExpr(me.property, envId)) : me.property.name;
+                    const old = Number(this.getMemberProperty(obj, prop)) || 0;
+                    const newVal = upe.operator === "++" ? old + 1 : old - 1;
+                    if (isRef(obj)) {
+                        const heapObj = this.s.heap[obj.id];
+                        if (heapObj) {
+                            heapObj.properties[prop] = newVal;
+                            this.recordStep(nodeRange(node), "assign", `Property \`${prop}\` updated to ${newVal}.`);
+                        }
+                    }
+                    return upe.prefix ? newVal : old;
+                }
+                return 0;
             }
             case "CallExpression": {
                 const ce = node;
@@ -787,6 +1600,15 @@ export class Interpreter {
                 this.recordStep(nodeRange(node), "expression-eval", `\`this\` refers to: \`${rtToDisplay(ctx?.thisBinding, this.s.heap)}\` in context "${ctx?.name}".`);
                 return ctx?.thisBinding;
             }
+            case "AwaitExpression": {
+                const ae = node;
+                const arg = this.evalExpr(ae.argument, envId);
+                this.recordStep(nodeRange(node), "expression-eval", `await paused execution; yielding to event loop.`);
+                throw new AwaitSignal(arg, ae);
+            }
+            case "ClassExpression": {
+                return this.evalClassExpr(node, envId);
+            }
             default:
                 this.recordStep(nodeRange(node), "unsupported", `Unsupported expression: \`${node.type}\` at line ${node.loc?.start.line}.`);
                 return undefined;
@@ -794,13 +1616,21 @@ export class Interpreter {
     }
     // ─── Call expression ───────────────────────────────────────────────────────
     evalCallExpr(node, envId) {
+        if (node.callee.type === "Super") {
+            const ctx = this.s.callStack[this.s.callStack.length - 1];
+            if (ctx?.superConstructor) {
+                const superArgs = node.arguments.map((a) => this.evalExpr(a, envId));
+                return this.invokeCallable(ctx.superConstructor, superArgs, ctx.thisBinding, node);
+            }
+            return undefined;
+        }
         // Handle console.log specially
         if (node.callee.type === "MemberExpression" &&
             node.callee.object.type === "Identifier" &&
             node.callee.object.name === "console") {
             const method = node.callee.property.name;
             const args = node.arguments.map((a) => this.evalExpr(a, envId));
-            const display = args.map((a) => rtToDisplay(a, this.s.heap));
+            const display = args.map((a) => rtToDisplay(a, this.s.heap, true));
             this.s.consoleOutput.push({
                 id: nextId("con"),
                 method: method || "log",
@@ -842,32 +1672,156 @@ export class Interpreter {
         }
         const args = node.arguments.map((a) => this.evalExpr(a, envId));
         if (callee === undefined || callee === null) {
-            throw new ThrowSignal(`TypeError: ${node.callee.name ?? "value"} is not a function`);
+            const exprName = node.callee?.name || node.callee?.property?.name || "value";
+            throw this.createThrowSignal(`TypeError: ${exprName} is not a function`, node);
         }
-        return this.invokeCallable(callee, args, thisVal, node);
+        return this.call(callee, thisVal, args, node);
     }
-    // ─── Unified callable invocation ──────────────────────────────────────────
-    invokeCallable(callee, args, thisVal = undefined, callNode = null) {
-        if (typeof callee === "object" && callee !== null && callee.__internal === "builtin") {
-            return callee.fn(...args);
+    // ─── Unified canonical callable model ─────────────────────────────────────
+    isCallable(v) {
+        if (v === null || v === undefined) return false;
+        if (typeof v === "function") return true;
+        if (typeof v === "object") {
+            if (v.__internal === "builtin" && (typeof v.fn === "function" || typeof v === "function")) return true;
+            if (v.__internal === "function") return true;
+            if (isRef(v)) {
+                const heapObj = this.s.heap[v.id];
+                if (heapObj && (heapObj.kind === "function" || heapObj.kind === "closure" || heapObj.properties?.__fnData)) {
+                    return true;
+                }
+            }
         }
+        return false;
+    }
+
+    call(callee, thisVal = undefined, args = [], callNode = null) {
+        if (!this.isCallable(callee)) {
+            const name = callNode?.callee?.name || callNode?.callee?.property?.name || rtToDisplay(callee, this.s.heap);
+            throw this.createThrowSignal(`TypeError: ${name} is not a function`, callNode || this._currentNode);
+        }
+
+        if (typeof callee === "object" && callee !== null && callee.__internal === "builtin") {
+            if (typeof callee.fn === "function") {
+                return callee.fn.apply(thisVal, args);
+            }
+            if (typeof callee === "function") {
+                return callee.apply(thisVal, args);
+            }
+        }
+
+        if (typeof callee === "function") {
+            return callee.apply(thisVal, args);
+        }
+
         if (typeof callee === "object" && callee !== null && callee.__internal === "function") {
             return this.callFunction(callee, args, thisVal, callNode);
         }
+
         if (isRef(callee)) {
             const heapObj = this.s.heap[callee.id];
-            if (heapObj?.kind === "function" || heapObj?.kind === "closure") {
-                const fnData = heapObj.properties.__fnData;
-                if (fnData)
-                    return this.callFunction(fnData, args, thisVal, callNode);
+            if (heapObj?.properties?.__fnData) {
+                return this.callFunction(heapObj.properties.__fnData, args, thisVal, callNode);
             }
         }
-        throw new ThrowSignal(`TypeError: \`${rtToDisplay(callee, this.s.heap)}\` is not a function (at line ${callNode?.loc?.start.line ?? "unknown"})`);
+
+        throw this.createThrowSignal(`TypeError: ${rtToDisplay(callee, this.s.heap)} is not a function`, callNode || this._currentNode);
+    }
+
+    construct(callee, args = [], newTarget = null, callNode = null) {
+        const ctorName = callee?.fnName || (typeof callee === "function" ? callee.name : callee?.name) || (callNode?.callee?.type === "Identifier" ? callNode.callee.name : "");
+
+        // Builtin Promise constructor
+        if (callee === this.builtins["Promise"] || ctorName === "Promise") {
+            return this.constructPromise(args[0], callNode);
+        }
+
+        // Builtin Error constructors
+        if (["Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError"].includes(ctorName)) {
+            const errName = ctorName || "Error";
+            const msg = args[0] !== undefined ? String(args[0]) : "";
+            const id = nextId("heap");
+            this.s.heap[id] = {
+                id,
+                kind: "object",
+                label: errName,
+                properties: { name: errName, message: msg },
+                prototype: null,
+            };
+            return mkRef(id);
+        }
+
+        // Builtin Array constructor
+        if (callee === this.builtins["Array"] || ctorName === "Array") {
+            const id = nextId("heap");
+            const props = { length: args.length };
+            args.forEach((v, i) => (props[i] = rtToBinding(v)));
+            this.s.heap[id] = { id, kind: "array", label: "Array", properties: props, prototype: null };
+            return mkRef(id);
+        }
+
+        // Builtin Object constructor
+        if (callee === this.builtins["Object"] || ctorName === "Object") {
+            const id = nextId("heap");
+            this.s.heap[id] = { id, kind: "object", label: "Object", properties: {}, prototype: null };
+            return mkRef(id);
+        }
+
+        if (!this.isCallable(callee)) {
+            const name = callNode?.callee?.name || rtToDisplay(callee, this.s.heap);
+            throw this.createThrowSignal(`TypeError: ${name} is not a constructor`, callNode || this._currentNode);
+        }
+
+        const newObjId = nextId("heap");
+        this.s.heap[newObjId] = { id: newObjId, kind: "object", label: "instance", properties: {}, prototype: null };
+        const newObj = mkRef(newObjId);
+
+        let fnData = null;
+        if (typeof callee === "object" && callee !== null && callee.__internal === "function") {
+            fnData = callee;
+        } else if (isRef(callee)) {
+            const heapObj = this.s.heap[callee.id];
+            if (heapObj?.properties?.__fnData) {
+                fnData = heapObj.properties.__fnData;
+            }
+        }
+
+        if (fnData) {
+            if (fnData.methods) {
+                const instObj = this.s.heap[newObjId];
+                if (instObj) {
+                    instObj.label = `${fnData.name || "Object"} instance`;
+                    Object.assign(instObj.properties, fnData.methods);
+                    if (fnData.superConstructor && isRef(fnData.superConstructor)) {
+                        const parentFnData = this.s.heap[fnData.superConstructor.id]?.properties?.__fnData;
+                        if (parentFnData?.methods) {
+                            Object.assign(instObj.properties, parentFnData.methods);
+                        }
+                    }
+                }
+            }
+            const result = this.callFunction(fnData, args, newObj, callNode);
+            if (result && (isRef(result) || (typeof result === "object" && result !== null))) {
+                return result;
+            }
+            return newObj;
+        }
+
+        return newObj;
+    }
+
+    invokeCallable(callee, args, thisVal = undefined, callNode = null) {
+        return this.call(callee, thisVal, args, callNode);
     }
     // ─── Call a user-defined function ─────────────────────────────────────────
     callFunction(fn, args, thisVal = undefined, callNode = null) {
         if (this.s.callStack.length >= 500) {
-            throw new ThrowSignal("Maximum call stack size exceeded (stack overflow)");
+            throw this.createThrowSignal("Maximum call stack size exceeded (stack overflow)", callNode || this._currentNode, "runtime");
+        }
+        if (fn.boundThis !== undefined) {
+            thisVal = fn.boundThis;
+        }
+        if (fn.boundArgs && fn.boundArgs.length > 0) {
+            args = [...fn.boundArgs, ...args];
         }
         const fnName = fn.name || "(anonymous)";
         const fnNode = fn.node;
@@ -885,16 +1839,43 @@ export class Interpreter {
             lexicalEnvId: fnEnvId,
             outerEnvId: fn.envId,
             sourceLine: fnNode.loc?.start.line ?? 0,
+            callSiteLine: callNode?.loc?.start?.line,
+            callSiteColumn: (callNode?.loc?.start?.column ?? 0) + 1,
+            superConstructor: fn.superConstructor,
         };
         this.s.callStack.push(ctx);
         this.recordStep(callNode ? nodeRange(callNode) : null, "call", `Calling function \`${fnName}\`. A new Function Execution Context is pushed onto the Call Stack (Creation Phase).`);
         // Creation phase: hoist params, var declarations, function declarations
         const params = fnNode.params ?? [];
         for (let i = 0; i < params.length; i++) {
-            const pnames = collectPatternNames(params[i]);
-            for (const name of pnames) {
-                this.setBinding(fnEnvId, name, "param", "initialized", args[i]);
-                this.recordStep(null, "declare", `Parameter \`${name}\` = \`${rtToDisplay(args[i], this.s.heap)}\` is added to the function's variable environment.`);
+            const param = params[i];
+            if (param.type === "RestElement") {
+                const restName = param.argument?.name ?? "args";
+                const restArr = args.slice(i);
+                const restId = nextId("heap");
+                const restProps = { length: restArr.length };
+                restArr.forEach((v, idx) => (restProps[idx] = rtToBinding(v)));
+                this.s.heap[restId] = { id: restId, kind: "array", label: "Array", properties: restProps, prototype: null };
+                this.setBinding(fnEnvId, restName, "param", "initialized", mkRef(restId));
+                this.recordStep(null, "declare", `Rest parameter \`...${restName}\` initialized with ${restArr.length} arguments.`);
+                break;
+            }
+            let paramVal = args[i];
+            if (param.type === "AssignmentPattern") {
+                if (paramVal === undefined) {
+                    paramVal = this.evalExpr(param.right, fnEnvId);
+                }
+                const pnames = collectPatternNames(param.left);
+                for (const name of pnames) {
+                    this.setBinding(fnEnvId, name, "param", "initialized", paramVal);
+                    this.recordStep(null, "declare", `Parameter \`${name}\` = \`${rtToDisplay(paramVal, this.s.heap)}\` is initialized.`);
+                }
+            } else {
+                const pnames = collectPatternNames(param);
+                for (const name of pnames) {
+                    this.setBinding(fnEnvId, name, "param", "initialized", paramVal);
+                    this.recordStep(null, "declare", `Parameter \`${name}\` = \`${rtToDisplay(paramVal, this.s.heap)}\` is added to the function's variable environment.`);
+                }
             }
         }
         const body = fnNode.body;
@@ -905,6 +1886,116 @@ export class Interpreter {
         const stackTop = this.s.callStack[this.s.callStack.length - 1];
         this.s.callStack[this.s.callStack.length - 1] = { ...stackTop, phase: "Execution" };
         this.recordStep(null, "execution-phase", `Function \`${fnName}\` enters Execution Phase. Code inside the function now runs.`);
+
+        if (fnNode.async) {
+            const promiseId = nextId("heap");
+            this.s.heap[promiseId] = {
+                id: promiseId,
+                kind: "promise",
+                label: "Promise (pending)",
+                state: "pending",
+                value: undefined,
+                prototype: null,
+                properties: {},
+                callbacks: [],
+            };
+            const promiseRef = mkRef(promiseId);
+            try {
+                let result;
+                if (body.type === "BlockStatement") {
+                    result = this.execBody(body.body, fnEnvId);
+                } else {
+                    result = this.evalExpr(body, fnEnvId);
+                }
+                const retVal = result instanceof ReturnSignal ? result.value : result;
+                this.resolvePromise(promiseId, retVal);
+            } catch (err) {
+                if (err instanceof AwaitSignal) {
+                    const remaining = err.remainingStmts;
+                    const targetVar = err.targetVar;
+                    const awaitArg = err.value;
+                    let resolvedVal = awaitArg;
+                    let isRejected = false;
+                    let rejectionVal = undefined;
+
+                    if (isRef(awaitArg) && this.s.heap[awaitArg.id]?.kind === "promise") {
+                        const hp = this.s.heap[awaitArg.id];
+                        hp.handled = true;
+                        if (hp.state === "rejected") {
+                            isRejected = true;
+                            rejectionVal = hp.value;
+                        } else {
+                            resolvedVal = hp.value;
+                        }
+                    }
+
+                    this.s.microtaskQueue.push({
+                        id: nextId("micro"),
+                        kind: "microtask",
+                        label: `await continuation: ${fnName}`,
+                        callback: {
+                            __internal: "builtin",
+                            name: `resume:${fnName}`,
+                            fn: () => {
+                                const resumeCtx = { ...ctx, phase: "Execution" };
+                                this.s.callStack.push(resumeCtx);
+                                this.recordStep(nodeRange(err.node), "expression-eval", `Resuming \`${fnName}\` after await from Microtask Queue.`);
+                                
+                                if (isRejected) {
+                                    if (err.tryNode?.handler) {
+                                        const handler = err.tryNode.handler;
+                                        const catchEnvId = nextId("env");
+                                        this.s.environments[catchEnvId] = { id: catchEnvId, bindings: {}, outer: err.tryEnvId || fnEnvId };
+                                        if (handler.param) {
+                                            const name = collectPatternNames(handler.param)[0];
+                                            this.setBinding(catchEnvId, name, "let", "initialized", rejectionVal);
+                                        }
+                                        this.recordStep(nodeRange(err.tryNode), "catch", `Awaited promise rejected: \`${rtToDisplay(rejectionVal, this.s.heap)}\`. Entering catch block.`);
+                                        let res;
+                                        if (handler.body?.type === "BlockStatement") {
+                                            res = this.execBody(handler.body.body, catchEnvId);
+                                        } else {
+                                            res = this.execStatement(handler.body, catchEnvId);
+                                        }
+                                        if (err.tryNode.finalizer) {
+                                            this.execStatement(err.tryNode.finalizer, err.tryEnvId || fnEnvId);
+                                        }
+                                        if (remaining.length > 0) {
+                                            res = this.execBody(remaining, fnEnvId);
+                                        }
+                                        const ret = res instanceof ReturnSignal ? res.value : undefined;
+                                        this.resolvePromise(promiseId, ret);
+                                    } else {
+                                        this.rejectPromise(promiseId, rejectionVal);
+                                    }
+                                    this.s.callStack.pop();
+                                    return;
+                                }
+
+                                if (targetVar) {
+                                    const vName = collectPatternNames(targetVar.id)[0];
+                                    if (vName) {
+                                        this.setBinding(fnEnvId, vName, "let", "initialized", resolvedVal);
+                                    }
+                                }
+                                const res = this.execBody(remaining, fnEnvId);
+                                const ret = res instanceof ReturnSignal ? res.value : undefined;
+                                this.resolvePromise(promiseId, ret);
+                                this.s.callStack.pop();
+                            }
+                        }
+                    });
+                    this.recordStep(nodeRange(err.node), "enqueue-task", `\`await\` paused \`${fnName}\`. Continuation queued into Microtask Queue.`);
+                    this.s.callStack.pop();
+                    return promiseRef;
+                }
+                this.s.callStack.pop();
+                throw err;
+            }
+            this.s.callStack.pop();
+            return promiseRef;
+        }
+
         let returnVal = undefined;
         try {
             let result;
@@ -938,7 +2029,11 @@ export class Interpreter {
     }
     getMemberProperty(obj, prop) {
         if (obj === null || obj === undefined) {
-            throw new ThrowSignal(`TypeError: Cannot read properties of ${obj} (reading '${prop}')`);
+            throw new ThrowSignal(`TypeError: Cannot read properties of ${obj} (reading '${prop}')`, this._currentNode);
+        }
+        // Builtin object / function static methods (e.g. Object.assign, Promise.resolve, Promise.reject)
+        if ((typeof obj === "object" || typeof obj === "function") && obj !== null && obj.__internal === "builtin") {
+            if (prop in obj) return obj[prop];
         }
         // String properties
         if (typeof obj === "string") {
@@ -971,6 +2066,99 @@ export class Interpreter {
         const heapObj = this.s.heap[obj.id];
         if (!heapObj)
             return undefined;
+        // Promise instance methods
+        if (heapObj.kind === "promise") {
+            if (prop === "then") {
+                return {
+                    __internal: "builtin",
+                    name: "Promise.prototype.then",
+                    fn: (onFulfilled, onRejected) => {
+                        const childId = nextId("heap");
+                        this.s.heap[childId] = {
+                            id: childId,
+                            kind: "promise",
+                            label: "Promise (pending)",
+                            state: "pending",
+                            value: undefined,
+                            reactions: [],
+                            handled: false,
+                            prototype: null,
+                            properties: {},
+                        };
+                        const reaction = { onFulfilled, onRejected, childId };
+                        heapObj.handled = true;
+                        if (heapObj.state === "pending") {
+                            heapObj.reactions = heapObj.reactions || [];
+                            heapObj.reactions.push(reaction);
+                        } else if (heapObj.state === "fulfilled") {
+                            this.queuePromiseReactionJob(reaction, "fulfilled", heapObj.value);
+                        } else if (heapObj.state === "rejected") {
+                            this.queuePromiseReactionJob(reaction, "rejected", heapObj.value);
+                        }
+                        return mkRef(childId);
+                    },
+                };
+            }
+            if (prop === "catch") {
+                return {
+                    __internal: "builtin",
+                    name: "Promise.prototype.catch",
+                    fn: (onRejected) => {
+                        const thenFn = this.getMemberProperty(obj, "then");
+                        return this.call(thenFn, obj, [undefined, onRejected]);
+                    },
+                };
+            }
+            if (prop === "finally") {
+                return {
+                    __internal: "builtin",
+                    name: "Promise.prototype.finally",
+                    fn: (onFinally) => {
+                        const childId = nextId("heap");
+                        this.s.heap[childId] = {
+                            id: childId,
+                            kind: "promise",
+                            label: "Promise (pending)",
+                            state: "pending",
+                            value: undefined,
+                            reactions: [],
+                            handled: false,
+                            prototype: null,
+                            properties: {},
+                        };
+                        const reaction = {
+                            onFulfilled: {
+                                __internal: "builtin",
+                                name: "finallyOnFulfilled",
+                                fn: (val) => {
+                                    if (this.isCallable(onFinally)) this.call(onFinally, undefined, []);
+                                    return val;
+                                }
+                            },
+                            onRejected: {
+                                __internal: "builtin",
+                                name: "finallyOnRejected",
+                                fn: (err) => {
+                                    if (this.isCallable(onFinally)) this.call(onFinally, undefined, []);
+                                    throw this.createThrowSignal(err);
+                                }
+                            },
+                            childId
+                        };
+                        if (heapObj.state === "pending") {
+                            heapObj.reactions = heapObj.reactions || [];
+                            heapObj.reactions.push(reaction);
+                        } else if (heapObj.state === "fulfilled") {
+                            this.queuePromiseReactionJob(reaction, "fulfilled", heapObj.value);
+                        } else if (heapObj.state === "rejected") {
+                            heapObj.handled = true;
+                            this.queuePromiseReactionJob(reaction, "rejected", heapObj.value);
+                        }
+                        return mkRef(childId);
+                    }
+                };
+            }
+        }
         // Array methods
         if (heapObj.kind === "array") {
             const len = Number(heapObj.properties.length) || 0;
@@ -978,11 +2166,13 @@ export class Interpreter {
                 return len;
             if (prop === "push")
                 return { __internal: "builtin", name: "Array.push", fn: (...items) => {
+                        let curLen = Number(heapObj.properties.length) || 0;
                         for (const item of items) {
-                            heapObj.properties[len] = rtToBinding(item);
-                            heapObj.properties.length = len + items.length;
+                            heapObj.properties[curLen] = rtToBinding(item);
+                            curLen++;
                         }
-                        return len + items.length;
+                        heapObj.properties.length = curLen;
+                        return curLen;
                     } };
             if (prop === "pop")
                 return { __internal: "builtin", name: "Array.pop", fn: () => {
@@ -1039,7 +2229,10 @@ export class Interpreter {
                     } };
             if (prop === "join")
                 return { __internal: "builtin", name: "Array.join", fn: (sep = ",") => {
-                        const parts = Array.from({ length: len }, (_, i) => rtToDisplay(heapObj.properties[i], this.s.heap));
+                        const parts = Array.from({ length: len }, (_, i) => {
+                            const val = heapObj.properties[i];
+                            return val === undefined || val === null ? "" : String(val);
+                        });
                         return parts.join(String(sep));
                     } };
             if (prop === "includes")
@@ -1066,27 +2259,131 @@ export class Interpreter {
                         this.s.heap[resultId] = { id: resultId, kind: "array", label: "Array", properties: resultProps, prototype: null };
                         return mkRef(resultId);
                     } };
+            if (prop === "find")
+                return { __internal: "builtin", name: "Array.find", fn: (cb) => {
+                        for (let i = 0; i < len; i++) {
+                            const item = heapObj.properties[i];
+                            if (this.invokeCallable(cb, [item, i, obj], undefined, null)) return item;
+                        }
+                        return undefined;
+                    } };
+            if (prop === "findIndex")
+                return { __internal: "builtin", name: "Array.findIndex", fn: (cb) => {
+                        for (let i = 0; i < len; i++) {
+                            const item = heapObj.properties[i];
+                            if (this.invokeCallable(cb, [item, i, obj], undefined, null)) return i;
+                        }
+                        return -1;
+                    } };
+            if (prop === "some")
+                return { __internal: "builtin", name: "Array.some", fn: (cb) => {
+                        for (let i = 0; i < len; i++) {
+                            const item = heapObj.properties[i];
+                            if (this.invokeCallable(cb, [item, i, obj], undefined, null)) return true;
+                        }
+                        return false;
+                    } };
+            if (prop === "every")
+                return { __internal: "builtin", name: "Array.every", fn: (cb) => {
+                        for (let i = 0; i < len; i++) {
+                            const item = heapObj.properties[i];
+                            if (!this.invokeCallable(cb, [item, i, obj], undefined, null)) return false;
+                        }
+                        return true;
+                    } };
+            if (prop === "sort")
+                return { __internal: "builtin", name: "Array.sort", fn: (cmp) => {
+                        const arr = Array.from({ length: len }, (_, i) => heapObj.properties[i]);
+                        if (cmp) {
+                            arr.sort((a, b) => this.invokeCallable(cmp, [a, b], undefined, null));
+                        } else {
+                            arr.sort((a, b) => String(a).localeCompare(String(b)));
+                        }
+                        arr.forEach((v, i) => (heapObj.properties[i] = v));
+                        return obj;
+                    } };
             if (!isNaN(Number(prop)))
                 return heapObj.properties[Number(prop)];
         }
-        // Regular object
-        const propVal = heapObj.properties[prop];
-        return propVal ?? undefined;
+        if (heapObj.kind === "function" || heapObj.kind === "closure") {
+            if (prop === "call") {
+                return {
+                    __internal: "builtin",
+                    name: "Function.prototype.call",
+                    fn: (thisArg, ...callArgs) => this.invokeCallable(obj, callArgs, thisArg, null),
+                };
+            }
+            if (prop === "apply") {
+                return {
+                    __internal: "builtin",
+                    name: "Function.prototype.apply",
+                    fn: (thisArg, argArray) => {
+                        let callArgs = [];
+                        if (Array.isArray(argArray)) {
+                            callArgs = argArray;
+                        } else if (isRef(argArray)) {
+                            const arrObj = this.s.heap[argArray.id];
+                            if (arrObj && arrObj.kind === "array") {
+                                const len = Number(arrObj.properties.length) || 0;
+                                callArgs = Array.from({ length: len }, (_, i) => arrObj.properties[i]);
+                            }
+                        }
+                        return this.invokeCallable(obj, callArgs, thisArg, null);
+                    },
+                };
+            }
+            if (prop === "bind") {
+                return {
+                    __internal: "builtin",
+                    name: "Function.prototype.bind",
+                    fn: (boundThis, ...boundArgs) => {
+                        const boundFnId = nextId("heap");
+                        const origFnData = heapObj.properties.__fnData;
+                        const boundFnData = {
+                            __internal: "function",
+                            envId: origFnData?.envId,
+                            node: origFnData?.node,
+                            name: `bound ${origFnData?.name || ""}`,
+                            boundThis,
+                            boundArgs,
+                        };
+                        this.s.heap[boundFnId] = {
+                            id: boundFnId,
+                            kind: "function",
+                            label: `bound ${heapObj.label}`,
+                            properties: { __fnData: boundFnData, length: Math.max(0, (origFnData?.node?.params?.length || 0) - boundArgs.length) },
+                            prototype: null,
+                            capturedEnvIds: heapObj.capturedEnvIds || [],
+                        };
+                        return mkRef(boundFnId);
+                    },
+                };
+            }
+        }
+        // Prototype chain resolution
+        let cur = heapObj;
+        while (cur) {
+            if (prop in cur.properties) {
+                return cur.properties[prop];
+            }
+            if (cur.prototype && isRef(cur.prototype)) {
+                cur = this.s.heap[cur.prototype.id];
+            } else {
+                break;
+            }
+        }
+        return undefined;
     }
     // ─── New expression ────────────────────────────────────────────────────────
     evalNewExpr(node, envId) {
-        const callee = this.evalExpr(node.callee, envId);
-        const args = node.arguments.map((a) => this.evalExpr(a, envId));
-        const newObjId = nextId("heap");
-        this.s.heap[newObjId] = { id: newObjId, kind: "object", label: "instance", properties: {}, prototype: null };
-        const newObj = mkRef(newObjId);
-        this.recordStep(nodeRange(node), "call", `new expression: creating a new object instance on the heap (id: ${newObjId}), then calling the constructor.`);
-        if (typeof callee === "object" && callee.__internal === "function") {
-            const result = this.callFunction(callee, args, newObj, node);
-            if (result && isRef(result))
-                return result;
+        let callee;
+        if (node.callee.type === "Identifier") {
+            callee = this.resolveIdentifier(node.callee.name, envId, node.callee);
+        } else {
+            callee = this.evalExpr(node.callee, envId);
         }
-        return newObj;
+        const args = node.arguments.map((a) => this.evalExpr(a, envId));
+        return this.construct(callee, args, callee, node);
     }
     // ─── Identifier resolution (scope chain walk) ─────────────────────────────
     resolveIdentifier(name, envId, node) {
@@ -1100,11 +2397,22 @@ export class Interpreter {
                 if (binding.state === "uninitialized") {
                     // TDZ error
                     this.recordStep(node ? nodeRange(node) : null, "tdz-error", `ReferenceError: Cannot access \`${name}\` before initialization. It is in the Temporal Dead Zone (TDZ) at this point!`);
-                    throw new ThrowSignal(`ReferenceError: Cannot access '${name}' before initialization`);
+                    throw this.createThrowSignal(`ReferenceError: Cannot access '${name}' before initialization`, node || this._currentNode);
                 }
                 // If this is an untouched built-in binding, return the callable builtin
                 if (typeof binding.value === "string" && binding.value === `[built-in: ${name}]` && name in this.builtins) {
-                    return { __internal: "builtin", name, fn: this.builtins[name] };
+                    const b = this.builtins[name];
+                    if (typeof b === "object" && b !== null && b.__internal === "builtin") return b;
+                    if (typeof b === "function") {
+                        if (b.__internal === "builtin") return b;
+                        const callable = (...a) => b(...a);
+                        callable.__internal = "builtin";
+                        callable.fnName = name;
+                        callable.fn = b;
+                        for (const k of Object.keys(b)) callable[k] = b[k];
+                        return callable;
+                    }
+                    return b;
                 }
                 this.recordStep(node ? nodeRange(node) : null, "expression-eval", `Reading \`${name}\` = \`${rtToDisplay(binding.value, this.s.heap)}\` from environment ${currentEnvId}.`, { lookupBinding: `${currentEnvId}/${name}` });
                 return binding.value;
@@ -1112,11 +2420,22 @@ export class Interpreter {
             currentEnvId = env.outer;
         }
         if (name in this.builtins) {
-            return { __internal: "builtin", name, fn: this.builtins[name] };
+            const b = this.builtins[name];
+            if (typeof b === "object" && b !== null && b.__internal === "builtin") return b;
+            if (typeof b === "function") {
+                if (b.__internal === "builtin") return b;
+                const callable = (...a) => b(...a);
+                callable.__internal = "builtin";
+                callable.fnName = name;
+                callable.fn = b;
+                for (const k of Object.keys(b)) callable[k] = b[k];
+                return callable;
+            }
+            return b;
         }
         // Not found anywhere
         this.recordStep(node ? nodeRange(node) : null, "throw", `ReferenceError: \`${name}\` is not defined. It was not found in any scope in the scope chain.`);
-        throw new ThrowSignal(`ReferenceError: ${name} is not defined`);
+        throw this.createThrowSignal(`ReferenceError: ${name} is not defined`, node || this._currentNode);
     }
     // ─── Assignment ──────────────────────────────────────────────────────────
     assignTo(target, val, envId, node) {
@@ -1139,6 +2458,150 @@ export class Interpreter {
                 }
             }
         }
+        else if (target.type === "ArrayPattern" || target.type === "ObjectPattern") {
+            this.assignPattern(target, val, "var", envId, node);
+        }
+    }
+    // ─── Destructuring pattern assignment ─────────────────────────────────────
+    assignPattern(pattern, val, kind, envId, declNode) {
+        if (!pattern) return;
+        if (pattern.type === "Identifier") {
+            const name = pattern.name;
+            if (kind === "var") {
+                this.updateBinding(name, envId, "initialized", val);
+            } else {
+                this.setBinding(envId, name, kind, "initialized", val);
+            }
+            this.recordStep(nodeRange(declNode), "declare", `\`${kind} ${name}\` = \`${rtToDisplay(val, this.s.heap)}\` (destructured).`);
+        }
+        else if (pattern.type === "ArrayPattern") {
+            let items = [];
+            if (isRef(val)) {
+                const heapObj = this.s.heap[val.id];
+                if (heapObj?.kind === "array") {
+                    const len = Number(heapObj.properties.length) || 0;
+                    items = Array.from({ length: len }, (_, i) => heapObj.properties[i]);
+                }
+            } else if (Array.isArray(val)) {
+                items = val;
+            } else if (typeof val === "string") {
+                items = Array.from(val);
+            }
+            for (let i = 0; i < pattern.elements.length; i++) {
+                const el = pattern.elements[i];
+                if (el) {
+                    if (el.type === "RestElement") {
+                        const restId = nextId("heap");
+                        const restSlice = items.slice(i);
+                        const restProps = { length: restSlice.length };
+                        restSlice.forEach((v, idx) => (restProps[idx] = v));
+                        this.s.heap[restId] = { id: restId, kind: "array", label: "Array", properties: restProps, prototype: null };
+                        this.assignPattern(el.argument, mkRef(restId), kind, envId, declNode);
+                        break;
+                    } else {
+                        this.assignPattern(el, items[i], kind, envId, declNode);
+                    }
+                }
+            }
+        }
+        else if (pattern.type === "ObjectPattern") {
+            for (const prop of pattern.properties) {
+                if (prop.type === "Property") {
+                    const key = prop.key.name ?? String(prop.key.value);
+                    const propVal = this.getMemberProperty(val, key);
+                    this.assignPattern(prop.value, propVal, kind, envId, declNode);
+                } else if (prop.type === "RestElement") {
+                    const restId = nextId("heap");
+                    const restProps = {};
+                    if (isRef(val)) {
+                        const heapObj = this.s.heap[val.id];
+                        if (heapObj) {
+                            Object.assign(restProps, heapObj.properties);
+                        }
+                    }
+                    this.s.heap[restId] = { id: restId, kind: "object", label: "Object", properties: restProps, prototype: null };
+                    this.assignPattern(prop.argument, mkRef(restId), kind, envId, declNode);
+                }
+            }
+        }
+        else if (pattern.type === "AssignmentPattern") {
+            const actualVal = val !== undefined ? val : this.evalExpr(pattern.right, envId);
+            this.assignPattern(pattern.left, actualVal, kind, envId, declNode);
+        }
+    }
+    // ─── Class object creation ────────────────────────────────────────────────
+    createClassObject(classNode, envId) {
+        const className = classNode.id?.name ?? "(anonymous)";
+        let constructorMethod = null;
+        const methods = {};
+
+        for (const item of classNode.body.body) {
+            if (item.type === "MethodDefinition") {
+                const methodName = item.key.name ?? String(item.key.value);
+                if (item.kind === "constructor") {
+                    constructorMethod = item.value;
+                } else {
+                    const fnId = this.createFunctionObject(methodName, item.value, envId);
+                    methods[methodName] = mkRef(fnId);
+                }
+            }
+        }
+
+        if (!constructorMethod) {
+            constructorMethod = {
+                type: "FunctionExpression",
+                id: null,
+                params: [],
+                body: { type: "BlockStatement", body: [] },
+                loc: classNode.loc,
+            };
+        }
+
+        let superConstructor = null;
+        if (classNode.superClass) {
+            superConstructor = this.evalExpr(classNode.superClass, envId);
+        }
+
+        const classHeapId = nextId("heap");
+        const fnData = {
+            __internal: "function",
+            envId,
+            node: constructorMethod,
+            name: className,
+            heapId: classHeapId,
+            isClass: true,
+            methods,
+            superConstructor,
+        };
+
+        this.s.heap[classHeapId] = {
+            id: classHeapId,
+            kind: "function",
+            label: `class ${className}`,
+            properties: {
+                name: className,
+                length: constructorMethod.params?.length ?? 0,
+                __fnData: fnData,
+                prototype: mkRef(classHeapId),
+                ...methods,
+            },
+            prototype: superConstructor && isRef(superConstructor) ? superConstructor : null,
+            capturedEnvIds: [envId],
+        };
+
+        return mkRef(classHeapId);
+    }
+    execClassDecl(node, envId) {
+        const className = node.id?.name ?? "(anonymous)";
+        const classRef = this.createClassObject(node, envId);
+        this.setBinding(envId, className, "class", "initialized", classRef);
+        this.recordStep(nodeRange(node), "declare", `Class \`${className}\` is declared.`);
+        return undefined;
+    }
+    evalClassExpr(node, envId) {
+        const classRef = this.createClassObject(node, envId);
+        this.recordStep(nodeRange(node), "expression-eval", `Class expression evaluated.`);
+        return classRef;
     }
     // ─── Compound operator (+=, -=, etc.) ─────────────────────────────────────
     applyCompoundOp(op, left, right) {
@@ -1253,7 +2716,7 @@ export class Interpreter {
             const env = this.s.environments[currentEnvId];
             if (!env)
                 break;
-            if (name in env.bindings) {
+            if (!env.isIntrinsics && name in env.bindings) {
                 env.bindings[name] = { ...env.bindings[name], state, value: rtToBinding(value) };
                 this.s.changedBindings.push(`${currentEnvId}/${name}`);
                 return;
@@ -1261,7 +2724,7 @@ export class Interpreter {
             currentEnvId = env.outer;
         }
         // Global assignment for undeclared vars
-        const globalEnv = Object.values(this.s.environments).find((e) => e.outer === null);
+        const globalEnv = Object.values(this.s.environments).find((e) => !e.isIntrinsics && (e.outer === null || this.s.environments[e.outer]?.isIntrinsics));
         if (globalEnv) {
             globalEnv.bindings[name] = { kind: "var", state, value: rtToBinding(value) };
             this.s.changedBindings.push(`${globalEnv.id}/${name}`);
@@ -1281,13 +2744,24 @@ export class Interpreter {
     }
     // ─── Step recording ───────────────────────────────────────────────────────
     recordStep(range, eventType, explanation, extra) {
+        const visibleEnvs = {};
+        for (const [id, env] of Object.entries(this.s.environments)) {
+            if (!env.isIntrinsics) {
+                const cloned = deepClone(env);
+                if (cloned.outer && this.s.environments[cloned.outer]?.isIntrinsics) {
+                    cloned.outer = null;
+                }
+                visibleEnvs[id] = cloned;
+            }
+        }
+
         const step = {
             index: this.s.steps.length,
             nodeRange: range,
             eventType,
             explanation,
             callStack: deepClone(this.s.callStack),
-            environments: deepClone(this.s.environments),
+            environments: visibleEnvs,
             heap: deepClone(this.s.heap),
             webApis: deepClone(this.s.webApis),
             microtaskQueue: deepClone(this.s.microtaskQueue),

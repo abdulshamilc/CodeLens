@@ -26,7 +26,7 @@ const EVENT_COLORS = {
     "event-loop-tick": "#ec4899",
 };
 export function ControlBar({ onRun }) {
-    const { trace, currentStep, isPlaying, playbackSpeed, isRunning, setCurrentStep, setIsPlaying, setPlaybackSpeed, stepForward, stepBack, setTrace, setRunError, } = useDBVStore();
+    const { trace, currentStep, isPlaying, playbackSpeed, isRunning, setCurrentStep, setIsPlaying, setIsRunning, setPlaybackSpeed, stepForward, stepBack, setTrace, setRunError, cancelAllRunning, } = useDBVStore();
     const playIntervalRef = useRef(null);
     // Auto-advance during playback
     useEffect(() => {
@@ -50,10 +50,13 @@ export function ControlBar({ onRun }) {
         };
     }, [isPlaying, playbackSpeed, trace.length]);
     const handleReset = useCallback(() => {
+        cancelAllRunning();
         setIsPlaying(false);
+        setIsRunning(false);
         setTrace([]);
+        setCurrentStep(0);
         setRunError(null);
-    }, [setIsPlaying, setTrace, setRunError]);
+    }, [cancelAllRunning, setIsPlaying, setIsRunning, setTrace, setCurrentStep, setRunError]);
     // Keyboard shortcuts
     useEffect(() => {
         const handler = (e) => {

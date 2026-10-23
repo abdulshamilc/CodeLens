@@ -15,17 +15,28 @@ import {
   stepBack,
   setIsRunning,
   setRunError,
+  bumpRunId,
+  startRun,
+  resetRunDerivedState,
+  loadExampleReset,
+  exampleLoadSuccess,
+  exampleLoadError,
+  setUserEditedSinceLoad,
+  setCodeChangedSinceRun,
   toggleBreakpoint,
   setBreakpoints,
+  setDiagnostics,
+  jumpToPosition,
   togglePanel,
 } from "@/store/slices/dbvSlice";
+import { loadExample, cancelAllRunning } from "../engine/exampleLoader";
 import { STORAGE_KEYS, LEGACY_STORAGE_KEYS } from "@/shared/storage/keys";
 
 const IDB_KEY = STORAGE_KEYS.DBV_LAST_SESSION;
 
-async function saveSessionToIdb(code) {
+async function saveSessionToIdb(code, exampleId = null) {
   try {
-    await idbSet(IDB_KEY, { code });
+    await idbSet(IDB_KEY, { code, exampleId });
   } catch {
     // ignore
   }
@@ -40,8 +51,9 @@ async function loadSessionFromIdb(dispatch) {
     if (data?.code) {
       dispatch(setCode(data.code));
     }
+    return data;
   } catch {
-    // ignore
+    return null;
   }
 }
 
@@ -56,15 +68,27 @@ function buildActions(dispatch) {
     stepBack: () => dispatch(stepBack()),
     setIsRunning: (running) => dispatch(setIsRunning(running)),
     setRunError: (error) => dispatch(setRunError(error)),
+    bumpRunId: () => dispatch(bumpRunId()),
+    startRun: () => dispatch(startRun()),
+    resetRunDerivedState: () => dispatch(resetRunDerivedState()),
+    loadExampleReset: (payload) => dispatch(loadExampleReset(payload)),
+    exampleLoadSuccess: (payload) => dispatch(exampleLoadSuccess(payload)),
+    exampleLoadError: (payload) => dispatch(exampleLoadError(payload)),
+    setUserEditedSinceLoad: (edited) => dispatch(setUserEditedSinceLoad(edited)),
+    setCodeChangedSinceRun: (changed) => dispatch(setCodeChangedSinceRun(changed)),
     toggleBreakpoint: (line) => dispatch(toggleBreakpoint(line)),
     setBreakpoints: (bps) => dispatch(setBreakpoints(bps)),
+    setDiagnostics: (diags) => dispatch(setDiagnostics(diags)),
+    jumpToPosition: (pos) => dispatch(jumpToPosition(pos)),
     togglePanel: (id) => dispatch(togglePanel(id)),
+    loadExample: (example, options) => loadExample(example, options),
+    cancelAllRunning: () => cancelAllRunning(),
     saveSession: async () => {
-      const code = store.getState().dbv.code;
-      await saveSessionToIdb(code);
+      const state = store.getState().dbv;
+      await saveSessionToIdb(state.code, state.currentExampleId);
     },
     loadSession: async () => {
-      await loadSessionFromIdb(dispatch);
+      return await loadSessionFromIdb(dispatch);
     },
   };
 }
@@ -74,14 +98,16 @@ export function useDBVStore(selector) {
   const dbv = useSelector((root) => root.dbv);
 
   const breakpointsSet = useMemo(() => new Set(dbv.breakpoints), [dbv.breakpoints]);
-
   const actions = useMemo(() => buildActions(dispatch), [dispatch]);
 
-  const combined = useMemo(() => ({
-    ...dbv,
-    breakpoints: breakpointsSet,
-    ...actions,
-  }), [dbv, breakpointsSet, actions]);
+  const combined = useMemo(
+    () => ({
+      ...dbv,
+      breakpoints: breakpointsSet,
+      ...actions,
+    }),
+    [dbv, breakpointsSet, actions]
+  );
 
   if (typeof selector === "function") {
     return selector(combined);
