@@ -23,20 +23,6 @@ const GLOBAL_SHORTCUTS = [
             { keys: ["R"], description: "Reset" },
         ],
     },
-    {
-        title: "CodeLens Board",
-        shortcuts: [
-            { keys: ["P"], description: "Pencil" },
-            { keys: ["B"], description: "Pen" },
-            { keys: ["M"], description: "Marker" },
-            { keys: ["H"], description: "Highlighter" },
-            { keys: ["E"], description: "Eraser" },
-            { keys: ["T"], description: "Text" },
-            { keys: ["V"], description: "Select / Move" },
-            { keys: ["Ctrl", "Z"], description: "Undo" },
-            { keys: ["Ctrl", "Shift", "Z"], description: "Redo" },
-        ],
-    },
 ];
 function Kbd({ children }) {
     return (<kbd className="inline-flex items-center justify-center min-w-[1.5rem] h-6 px-1.5 rounded text-xs font-code font-semibold" style={{

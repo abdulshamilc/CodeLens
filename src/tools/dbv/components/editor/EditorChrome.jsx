@@ -1,11 +1,14 @@
 // src/tools/dbv/components/editor/EditorChrome.jsx
-// VS Code-style editor chrome: Tab bar, quick actions, and status bar
+// VS Code-style editor chrome: Tab bar, language selector, quick actions, and status bar
 
 import React, { useState } from "react";
 import { EditorSettingsModal } from "./EditorSettingsModal";
+import { SUPPORTED_LANGUAGES, getLanguageConfig } from "../../engine/compilerService";
 
 export function EditorChrome({
-  fileName = "main.js",
+  fileName,
+  language = "javascript",
+  onSelectLanguage,
   isDirty = false,
   cursorPos = { line: 1, col: 1 },
   selectionCount = 0,
@@ -19,6 +22,9 @@ export function EditorChrome({
 }) {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
+  const activeLangConfig = getLanguageConfig(language) || SUPPORTED_LANGUAGES[0];
+  const activeFileName = fileName || activeLangConfig.fileName;
+
   return (
     <div className="flex flex-col w-full h-full overflow-hidden select-none" style={{ background: "rgb(var(--color-bg))" }}>
       {/* Top Tab Bar */}
@@ -30,8 +36,8 @@ export function EditorChrome({
           color: "rgb(var(--color-text))",
         }}
       >
-        {/* Left: Active File Tab */}
-        <div className="flex items-center gap-1 h-full">
+        {/* Left: Active File Tab & Language Selector */}
+        <div className="flex items-center gap-1.5 h-full">
           <div
             className="flex items-center gap-2 px-3 h-full border-r border-t-2 font-medium cursor-default transition-all"
             style={{
@@ -40,20 +46,40 @@ export function EditorChrome({
               borderTopColor: "rgb(var(--color-accent))",
             }}
           >
-            {/* JS Logo Icon */}
+            {/* Language Logo Badge */}
             <span
               className="w-4 h-4 rounded text-[9px] font-black flex items-center justify-center shadow-xs"
-              style={{ background: "#f7df1e", color: "#000000" }}
+              style={{
+                background: activeLangConfig.color,
+                color: activeLangConfig.textColor,
+              }}
             >
-              JS
+              {activeLangConfig.badgeText}
             </span>
-            <span className="font-mono text-slate-200">{fileName}</span>
+            <span className="font-mono text-slate-200">{activeFileName}</span>
             {isDirty && (
               <span
                 className="w-2 h-2 rounded-full bg-amber-400 animate-pulse ml-0.5"
                 title="Unsaved / modified code"
               />
             )}
+          </div>
+
+          {/* Language Selector Dropdown */}
+          <div className="relative flex items-center">
+            <select
+              value={activeLangConfig.id}
+              onChange={(e) => onSelectLanguage?.(e.target.value)}
+              className="bg-slate-800/80 hover:bg-slate-700/80 text-slate-300 text-[11px] font-mono py-1 px-2 rounded border border-slate-700/80 cursor-pointer focus:outline-hidden focus:border-indigo-500 transition-colors"
+              title="Select Programming Language"
+              aria-label="Select Programming Language"
+            >
+              {SUPPORTED_LANGUAGES.map((lang) => (
+                <option key={lang.id} value={lang.id} className="bg-slate-900 text-slate-200">
+                  {lang.name} ({lang.version})
+                </option>
+              ))}
+            </select>
           </div>
         </div>
 
@@ -63,7 +89,7 @@ export function EditorChrome({
           <button
             type="button"
             onClick={onFormat}
-            className="p-1.5 rounded hover:text-white hover:bg-slate-700/50 transition-colors flex items-center gap-1"
+            className="p-1.5 rounded hover:text-white hover:bg-slate-700/50 transition-colors flex items-center gap-1 cursor-pointer"
             title="Format Code (Shift+Alt+F)"
           >
             <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -76,7 +102,7 @@ export function EditorChrome({
           <button
             type="button"
             onClick={() => onUpdateSettings({ wordWrap: !settings.wordWrap })}
-            className={`p-1.5 rounded transition-colors flex items-center gap-1 ${
+            className={`p-1.5 rounded transition-colors flex items-center gap-1 cursor-pointer ${
               settings.wordWrap ? "text-indigo-400 bg-indigo-500/10 font-medium" : "hover:text-white hover:bg-slate-700/50"
             }`}
             title={`Toggle Word Wrap (${settings.wordWrap ? "On" : "Off"})`}
@@ -91,7 +117,7 @@ export function EditorChrome({
           <button
             type="button"
             onClick={() => onUpdateSettings({ minimap: !settings.minimap })}
-            className={`p-1.5 rounded transition-colors flex items-center gap-1 ${
+            className={`p-1.5 rounded transition-colors flex items-center gap-1 cursor-pointer ${
               settings.minimap ? "text-indigo-400 bg-indigo-500/10 font-medium" : "hover:text-white hover:bg-slate-700/50"
             }`}
             title={`Toggle Minimap (${settings.minimap ? "On" : "Off"})`}
@@ -108,7 +134,7 @@ export function EditorChrome({
             <button
               type="button"
               onClick={() => onUpdateSettings({ fontSize: Math.max(9, settings.fontSize - 1) })}
-              className="w-5 h-5 rounded hover:bg-slate-700/50 flex items-center justify-center font-bold text-xs"
+              className="w-5 h-5 rounded hover:bg-slate-700/50 flex items-center justify-center font-bold text-xs cursor-pointer"
               title="Decrease Font Size"
             >
               -
@@ -117,7 +143,7 @@ export function EditorChrome({
             <button
               type="button"
               onClick={() => onUpdateSettings({ fontSize: Math.min(24, settings.fontSize + 1) })}
-              className="w-5 h-5 rounded hover:bg-slate-700/50 flex items-center justify-center font-bold text-xs"
+              className="w-5 h-5 rounded hover:bg-slate-700/50 flex items-center justify-center font-bold text-xs cursor-pointer"
               title="Increase Font Size"
             >
               +
@@ -128,7 +154,7 @@ export function EditorChrome({
           <button
             type="button"
             onClick={() => setIsSettingsOpen(true)}
-            className="p-1.5 rounded hover:text-white hover:bg-slate-700/50 transition-colors ml-0.5"
+            className="p-1.5 rounded hover:text-white hover:bg-slate-700/50 transition-colors ml-0.5 cursor-pointer"
             title="Editor Settings"
           >
             <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -159,7 +185,7 @@ export function EditorChrome({
           <button
             type="button"
             onClick={onOpenProblems}
-            className="flex items-center gap-1 hover:text-indigo-400 transition-colors"
+            className="flex items-center gap-1 hover:text-indigo-400 transition-colors cursor-pointer"
             title="Diagnostics / Problems"
           >
             {problemCount > 0 ? (
@@ -167,7 +193,7 @@ export function EditorChrome({
                 <svg className="w-3 h-3 text-red-400" viewBox="0 0 20 20" fill="currentColor">
                   <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
                 </svg>
-                <span className="text-red-400">{problemCount} Problems</span>
+                <span className="text-red-400 font-semibold">{problemCount} Problems</span>
               </>
             ) : (
               <>
@@ -197,13 +223,25 @@ export function EditorChrome({
           <button
             type="button"
             onClick={() => onUpdateSettings({ tabSize: settings.tabSize === 2 ? 4 : 2 })}
-            className="hover:text-white transition-colors"
+            className="hover:text-white transition-colors cursor-pointer"
             title="Click to toggle tab spaces (2 / 4)"
           >
             Spaces: {settings.tabSize}
           </button>
           <span className="hidden sm:inline">UTF-8</span>
-          <span className="font-semibold text-indigo-400">JavaScript</span>
+          <button
+            type="button"
+            onClick={() => {
+              const ids = SUPPORTED_LANGUAGES.map((l) => l.id);
+              const nextIdx = (ids.indexOf(activeLangConfig.id) + 1) % ids.length;
+              onSelectLanguage?.(ids[nextIdx]);
+            }}
+            className="font-semibold transition-colors hover:underline cursor-pointer"
+            style={{ color: activeLangConfig.color }}
+            title="Click to toggle language"
+          >
+            {activeLangConfig.name}
+          </button>
         </div>
       </div>
 

@@ -78,20 +78,20 @@ export function VisualizationZone({
               background: isExampleLoading
                 ? "rgb(var(--color-accent))"
                 : step
-                ? "rgb(var(--color-success))"
-                : runError
-                ? "rgb(var(--color-danger, 239, 68, 68))"
-                : "rgb(var(--color-text-muted))",
+                  ? "rgb(var(--color-success))"
+                  : runError
+                    ? "rgb(var(--color-danger, 239, 68, 68))"
+                    : "rgb(var(--color-text-muted))",
             }}
           />
           <h2 className="text-xs sm:text-sm font-bold font-display tracking-tight truncate">
             {isExampleLoading
               ? "Analyzing Example…"
               : displayedCtx
-              ? displayedCtx.type === "Global"
-                ? "Global Execution Context (GEC)"
-                : `Function: ${displayedCtx.name}()`
-              : "Execution Stage"}
+                ? displayedCtx.type === "Global"
+                  ? "Global Execution Context"
+                  : `FEC: ${displayedCtx.name}()`
+                : "Execution Stage"}
           </h2>
           {displayedCtx && !isExampleLoading && (
             <span
@@ -206,8 +206,8 @@ export function VisualizationZone({
               {isExampleLoading
                 ? "Preparing step-by-step AST execution trace and memory graph…"
                 : runError
-                ? `Visualization stopped: ${typeof runError === "object" ? `${runError.name}: ${runError.message}` : runError}`
-                : step?.explanation ||
+                  ? `Visualization stopped: ${typeof runError === "object" ? `${runError.name}: ${runError.message}` : runError}`
+                  : step?.explanation ||
                   "Load an example from the library or click 👁 Visualize (Ctrl+Shift+Enter) to trace memory and scope."}
             </motion.p>
           </AnimatePresence>
@@ -317,7 +317,6 @@ export function VisualizationZone({
               ctx={displayedCtx}
               env={env}
               heap={step?.heap || {}}
-              callStack={step?.callStack || []}
               activeLine={isLiveContext ? activeLine : null}
               allCodeLines={allCodeLines}
               isLiveContext={isLiveContext}

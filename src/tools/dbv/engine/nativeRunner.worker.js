@@ -1,7 +1,7 @@
 // src/tools/dbv/engine/nativeRunner.worker.js
 // Sandboxed native JavaScript execution worker.
 // Executes standard JS natively with mock fetch, throttled console serializer,
-// escape-hatch isolation, and hard safety limits.
+// custom input (prompt/readline/input), escape-hatch isolation, and hard safety limits.
 
 import { serializeConsoleArgs } from "./nativeSerializer";
 
@@ -21,7 +21,7 @@ function flushLogs() {
   }
 }
 
-function queueLog(method, rawArgs) {
+function queueLog(method, rawArgs, error = null) {
   if (logCount >= MAX_LOG_LINES) {
     if (logCount === MAX_LOG_LINES) {
       logCount++;
@@ -29,6 +29,7 @@ function queueLog(method, rawArgs) {
         id: `sys-cap-${Date.now()}`,
         method: "warn",
         args: [`[CodeLens] Output limit reached (${MAX_LOG_LINES} lines). Further output truncated.`],
+        error: null,
         timestamp: Date.now(),
       });
       flushLogs();
@@ -42,6 +43,7 @@ function queueLog(method, rawArgs) {
     id: `log-${Date.now()}-${logCount}`,
     method,
     args: serialized,
+    error,
     timestamp: Date.now(),
   });
 
@@ -132,27 +134,78 @@ self.onmessage = async (event) => {
   const msg = event.data;
   if (!msg || msg.type !== "run") return;
 
-  const { code } = msg;
+  const { code, customInput = "" } = msg;
   logCount = 0;
   pendingLogs = [];
+
+  // Setup custom input (stdin) providers
+  let inputLines = typeof customInput === "string" ? customInput.split(/\r?\n/) : [];
+  let inputIndex = 0;
+
+  function customPrompt(promptMsg) {
+    if (promptMsg !== undefined && promptMsg !== "") {
+      queueLog("log", [String(promptMsg)]);
+    }
+    if (inputIndex < inputLines.length) {
+      return inputLines[inputIndex++];
+    }
+    return "";
+  }
+
+  function customReadline() {
+    if (inputIndex < inputLines.length) {
+      return inputLines[inputIndex++];
+    }
+    return null;
+  }
 
   try {
     // Construct AsyncFunction to support top-level await
     const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-    const runner = new AsyncFunction("console", "fetch", code);
+    const runner = new AsyncFunction("console", "fetch", "prompt", "readline", "input", code);
 
-    // Execute user code
-    await runner(customConsole, mockFetch);
+    // Execute user code with sandboxed environment
+    await runner(customConsole, mockFetch, customPrompt, customReadline, customPrompt);
 
     // Flush any pending logs
     flushLogs();
 
     self.postMessage({ type: "done", logCount });
   } catch (err) {
+    const name = err?.name || "Error";
+    const message = err?.message || String(err);
+    let line = 1;
+    let column = 1;
+
+    if (err?.stack) {
+      const match = err.stack.match(/<anonymous>:(\d+):(\d+)/) || err.stack.match(/:(\d+):(\d+)/);
+      if (match) {
+        line = Math.max(1, parseInt(match[1], 10) - 2);
+        column = parseInt(match[2], 10) || 1;
+      }
+    }
+
+    const codeLines = code.split("\n");
+    const snippet = line <= codeLines.length ? `${line} | ${codeLines[line - 1]}` : "";
+
+    const errorObj = {
+      name,
+      message,
+      line,
+      column,
+      kind: name === "SyntaxError" ? "parse" : "runtime",
+      stack: [{ fnName: "(anonymous)", line, column }],
+      sourceSnippet: snippet,
+      exitCode: 1,
+    };
+
+    queueLog("error", [`${name}: ${message}`], errorObj);
     flushLogs();
+
     self.postMessage({
       type: "error",
-      message: err?.message || String(err),
+      error: errorObj,
+      message: `${name}: ${message}`,
       stack: err?.stack,
     });
   }

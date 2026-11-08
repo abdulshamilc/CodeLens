@@ -114,8 +114,10 @@ export class Interpreter {
     _currentNode = null;
     _sourceCode = "";
 
-    constructor(stepLimit = 20_000) {
+    constructor(stepLimit = 20_000, customInput = "") {
         _id = 0;
+        this._customInputLines = typeof customInput === "string" ? customInput.split(/\r?\n/) : [];
+        this._inputCursor = 0;
         this.s = {
             callStack: [],
             environments: {},
@@ -129,6 +131,13 @@ export class Interpreter {
             stepLimit,
             changedBindings: [],
         };
+    }
+
+    consumeNextInput() {
+        if (this._inputCursor < this._customInputLines.length) {
+            return this._customInputLines[this._inputCursor++];
+        }
+        return "";
     }
 
     buildSourceSnippet(source, line, column, endLine, endColumn) {
@@ -185,6 +194,10 @@ export class Interpreter {
             message = rawVal.message;
         } else {
             message = rtToDisplay(rawVal, this.s.heap);
+        }
+
+        if (kind === "step_limit") {
+            name = "TimeoutError";
         }
 
         // Clean message of any "Uncaught " prefix
@@ -348,6 +361,19 @@ export class Interpreter {
     setupBuiltins(envId) {
         const builtins = [
             ["console", () => undefined], // handled separately
+            ["prompt", (msg) => {
+                if (msg !== undefined && msg !== "") {
+                    this.s.consoleOutput.push({ id: nextId("con"), method: "log", args: [String(msg)], stepIndex: this.s.steps.length });
+                }
+                return this.consumeNextInput();
+            }],
+            ["readline", () => this.consumeNextInput()],
+            ["input", (msg) => {
+                if (msg !== undefined && msg !== "") {
+                    this.s.consoleOutput.push({ id: nextId("con"), method: "log", args: [String(msg)], stepIndex: this.s.steps.length });
+                }
+                return this.consumeNextInput();
+            }],
             ["undefined", () => undefined],
             ["NaN", () => NaN],
             ["Infinity", () => Infinity],
@@ -958,8 +984,28 @@ export class Interpreter {
     // ─── Drain Event Loop ──────────────────────────────────────────────────────
     drainEventLoop() {
         while (this.s.microtaskQueue.length > 0 || this.s.macrotaskQueue.length > 0) {
-            if (this.s.steps.length >= this.s.stepLimit)
+            if (this.s.steps.length >= this.s.stepLimit) {
+                const dbvErr = {
+                    name: "TimeoutError",
+                    message: "Step limit exceeded in event loop (possible infinite microtask/macrotask loop)",
+                    stack: [],
+                    line: 1,
+                    column: 1,
+                    endLine: 1,
+                    endColumn: 1,
+                    kind: "step_limit",
+                    sourceSnippet: "",
+                };
+                this.s.consoleOutput.push({
+                    id: nextId("con"),
+                    method: "error",
+                    args: [`Uncaught ${dbvErr.name}: ${dbvErr.message}`],
+                    stepIndex: this.s.steps.length,
+                    error: dbvErr,
+                });
+                this.recordStep(null, "throw", `TimeoutError: ${dbvErr.message}`, { error: dbvErr });
                 break;
+            }
             // 1. Drain ALL microtasks before any macrotask
             if (this.s.microtaskQueue.length > 0) {
                 const task = this.s.microtaskQueue.shift();

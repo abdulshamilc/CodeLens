@@ -27,6 +27,9 @@ import {
   setBreakpoints,
   setDiagnostics,
   jumpToPosition,
+  setLanguage,
+  setCustomInput,
+  setExecutionResult,
   togglePanel,
 } from "@/store/slices/dbvSlice";
 import { loadExample, cancelAllRunning } from "../engine/exampleLoader";
@@ -80,6 +83,9 @@ function buildActions(dispatch) {
     setBreakpoints: (bps) => dispatch(setBreakpoints(bps)),
     setDiagnostics: (diags) => dispatch(setDiagnostics(diags)),
     jumpToPosition: (pos) => dispatch(jumpToPosition(pos)),
+    setLanguage: (lang) => dispatch(setLanguage(lang)),
+    setCustomInput: (input) => dispatch(setCustomInput(input)),
+    setExecutionResult: (res) => dispatch(setExecutionResult(res)),
     togglePanel: (id) => dispatch(togglePanel(id)),
     loadExample: (example, options) => loadExample(example, options),
     cancelAllRunning: () => cancelAllRunning(),

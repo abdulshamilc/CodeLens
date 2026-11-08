@@ -42,6 +42,8 @@ export function CodeEditor({ className, style, onRun, onVisualize, onOpenProblem
     jumpToPosition,
     runError,
     setUserEditedSinceLoad,
+    language,
+    setLanguage,
   } = useDBVStore();
   const { theme } = useAppStore();
   const [settings, updateSettings] = useEditorSettings();
@@ -352,9 +354,13 @@ export function CodeEditor({ className, style, onRun, onVisualize, onOpenProblem
     }
   }, [jumpTarget]);
 
+  const activeExt = language === "python" ? "py" : language === "typescript" ? "ts" : "js";
+
   return (
     <EditorChrome
-      fileName="main.js"
+      fileName={`main.${activeExt}`}
+      language={language || "javascript"}
+      onSelectLanguage={setLanguage}
       cursorPos={cursorPos}
       selectionCount={selectionCount}
       breakpointCount={breakpoints.size}
@@ -369,7 +375,7 @@ export function CodeEditor({ className, style, onRun, onVisualize, onOpenProblem
         className={`w-full h-full cursor-text ${className ?? ""}`}
         style={style}
         onClick={() => viewRef.current?.focus()}
-        aria-label="JavaScript Code Editor"
+        aria-label="Code Editor"
       />
     </EditorChrome>
   );

@@ -16,9 +16,9 @@ self.onmessage = (event) => {
   }
 
   if (msg.type === "run") {
-    const { code, stepLimit, runId } = msg;
+    const { code, stepLimit, runId, customInput = "" } = msg;
     try {
-      const interpreter = new Interpreter(stepLimit ?? STEP_LIMIT);
+      const interpreter = new Interpreter(stepLimit ?? STEP_LIMIT, customInput);
       const steps = interpreter.run(code);
       const lastStep = steps[steps.length - 1];
 

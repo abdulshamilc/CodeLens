@@ -17,7 +17,8 @@ import { ResizeHandle } from "./components/layout/ResizeHandle";
 import { LayoutMenu } from "./components/layout/LayoutMenu";
 import { ExamplesDrawer } from "./components/ExamplesDrawer";
 import { Button, Slider, Tabs } from "../../shared/ui";
-import { executeNativeScript } from "./engine/nativeRunner";
+import { compileAndRun } from "./engine/compilerService";
+import { transpileTypeScript } from "./engine/typeScriptCompiler";
 import { CommandPalette } from "./components/editor/CommandPalette";
 import { formatCode } from "./editor/formatCode";
 import { EXAMPLES } from "./examples/examples.js";
@@ -113,16 +114,42 @@ export function DBVPage() {
     };
   }, [stopExecution]);
 
-  // 1. RUN MODE: Native sandboxed Web Worker execution (standard JS, fast, async/await, mock fetch)
+  // 1. RUN MODE: Multi-language compilation & sandboxed execution
   const runNative = useCallback(
     (codeOrEvent) => {
       const currentCode =
         typeof codeOrEvent === "string" ? codeOrEvent : useDBVStore.getState().code;
 
+      const currentLang = useDBVStore.getState().language || "javascript";
+      const currentInput = useDBVStore.getState().customInput || "";
+
       if (!currentCode || !currentCode.trim()) {
         stopExecution();
-        setRunError("Editor is empty. Enter some JavaScript code and press Run or Visualize.");
-        setNativeLogs([]);
+        const emptyErr = {
+          name: "ValidationError",
+          message: "Editor is empty. Enter some code and press Run or Visualize.",
+          line: 1,
+          column: 1,
+          kind: "validation",
+          stack: [],
+          sourceSnippet: "",
+          exitCode: 1,
+        };
+        setRunError(emptyErr);
+        setNativeLogs([
+          {
+            id: `err-empty-${Date.now()}`,
+            method: "error",
+            args: [`ValidationError: ${emptyErr.message}`],
+            error: emptyErr,
+            timestamp: Date.now(),
+          },
+        ]);
+        useDBVStore.getState().setExecutionResult({
+          status: "error",
+          exitCode: 1,
+          executionTimeMs: 0,
+        });
         setIsRunning(false);
         return;
       }
@@ -137,7 +164,15 @@ export function DBVPage() {
       setNativeLogs([]);
       setConsoleTab("run");
 
-      const runner = executeNativeScript(currentCode, {
+      useDBVStore.getState().setExecutionResult({
+        status: "running",
+        exitCode: null,
+        executionTimeMs: 0,
+      });
+
+      const runner = compileAndRun(currentCode, {
+        language: currentLang,
+        customInput: currentInput,
         onLogs: (newItems) => {
           if (useDBVStore.getState().runId === thisRunId) {
             setNativeLogs((prev) => [...prev, ...newItems]);
@@ -148,23 +183,59 @@ export function DBVPage() {
             setNativeLogs([]);
           }
         },
-        onDone: () => {
+        onDone: (summary) => {
           if (useDBVStore.getState().runId === thisRunId) {
             setIsRunning(false);
+            useDBVStore.getState().setExecutionResult({
+              status: "success",
+              exitCode: summary.exitCode ?? 0,
+              executionTimeMs: summary.executionTimeMs ?? 0,
+              logCount: summary.logCount ?? 0,
+            });
             nativeRunnerRef.current = null;
           }
         },
         onError: (err) => {
           if (useDBVStore.getState().runId === thisRunId) {
-            setRunError(err.message || "Runtime Error");
+            const normalized = typeof err === "object" ? err : {
+              name: "RuntimeError",
+              message: String(err),
+              line: 1,
+              column: 1,
+              kind: "runtime",
+              stack: [],
+              sourceSnippet: "",
+              exitCode: 1,
+            };
+            setRunError(normalized);
             setIsRunning(false);
+            useDBVStore.getState().setExecutionResult({
+              status: "error",
+              exitCode: normalized.exitCode || 1,
+              executionTimeMs: 0,
+            });
             nativeRunnerRef.current = null;
           }
         },
-        onTimeout: (msg) => {
+        onTimeout: (timeoutErr) => {
           if (useDBVStore.getState().runId === thisRunId) {
-            setRunError(msg);
+            const normalized = typeof timeoutErr === "object" ? timeoutErr : {
+              name: "TimeoutError",
+              message: String(timeoutErr),
+              line: 1,
+              column: 1,
+              kind: "timeout",
+              stack: [],
+              sourceSnippet: "",
+              exitCode: 124,
+            };
+            setRunError(normalized);
             setIsRunning(false);
+            useDBVStore.getState().setExecutionResult({
+              status: "timeout",
+              exitCode: 124,
+              executionTimeMs: 5000,
+            });
             nativeRunnerRef.current = null;
           }
         },
@@ -181,12 +252,51 @@ export function DBVPage() {
       const currentCode =
         typeof codeOrEvent === "string" ? codeOrEvent : useDBVStore.getState().code;
 
+      const currentLang = useDBVStore.getState().language || "javascript";
+      const currentInput = useDBVStore.getState().customInput || "";
+
       if (!currentCode || !currentCode.trim()) {
         stopExecution();
-        setRunError("Editor is empty. Enter some JavaScript code and press Run or Visualize.");
+        const emptyErr = {
+          name: "ValidationError",
+          message: "Editor is empty. Enter some code and press Run or Visualize.",
+          line: 1,
+          column: 1,
+          kind: "validation",
+          stack: [],
+          sourceSnippet: "",
+          exitCode: 1,
+        };
+        setRunError(emptyErr);
         setTrace([]);
         setIsRunning(false);
         return;
+      }
+
+      // If language is Python, fallback gracefully to Run mode
+      if (currentLang === "python") {
+        runNative(currentCode);
+        return;
+      }
+
+      let codeToVisualize = currentCode;
+      if (currentLang === "typescript") {
+        const tsRes = transpileTypeScript(currentCode);
+        if (tsRes.error) {
+          setRunError(tsRes.error);
+          setNativeLogs([
+            {
+              id: `err-ts-${Date.now()}`,
+              method: "error",
+              args: [`${tsRes.error.name}: ${tsRes.error.message}`],
+              error: tsRes.error,
+              timestamp: Date.now(),
+            },
+          ]);
+          setIsRunning(false);
+          return;
+        }
+        codeToVisualize = tsRes.code;
       }
 
       stopExecution();
@@ -221,8 +331,18 @@ export function DBVPage() {
           setTrace(msg.steps);
           if (msg.error) {
             setRunError(msg.error);
+            useDBVStore.getState().setExecutionResult({
+              status: "error",
+              exitCode: 1,
+              executionTimeMs: 0,
+            });
           } else {
             setRunError(null);
+            useDBVStore.getState().setExecutionResult({
+              status: "success",
+              exitCode: 0,
+              executionTimeMs: 0,
+            });
           }
           setIsRunning(false);
           try { worker.terminate(); } catch {}
@@ -241,6 +361,7 @@ export function DBVPage() {
             line: msg.line || 1,
             column: msg.column || 1,
             sourceSnippet: "",
+            exitCode: 1,
           });
           setIsRunning(false);
           try { worker.terminate(); } catch {}
@@ -258,6 +379,7 @@ export function DBVPage() {
             line: 1,
             column: 1,
             sourceSnippet: "",
+            exitCode: 1,
           });
           setIsRunning(false);
         }
@@ -265,7 +387,13 @@ export function DBVPage() {
         if (workerRef.current === worker) workerRef.current = null;
       };
 
-      const msg = { type: "run", code: currentCode, stepLimit: 20_000, runId: thisRunId };
+      const msg = {
+        type: "run",
+        code: codeToVisualize,
+        stepLimit: 20_000,
+        runId: thisRunId,
+        customInput: currentInput,
+      };
       worker.postMessage(msg);
 
       // Safety timeout: 15s limit
@@ -281,12 +409,13 @@ export function DBVPage() {
             line: 1,
             column: 1,
             sourceSnippet: "",
+            exitCode: 124,
           });
           setIsRunning(false);
         }
       }, 15_000);
     },
-    [stopExecution, setTrace, setIsRunning, setRunError]
+    [stopExecution, setTrace, setIsRunning, setRunError, runNative]
   );
 
   // Initial mount: load URL param (?example= or ?code=) or session, and auto-visualize once to populate Step 1
@@ -433,6 +562,17 @@ export function DBVPage() {
       setNarrowTab("console");
     }
   }, [visibleZones.console, toggleZoneVisibility, isNarrowScreen]);
+
+  // Clear Console logs
+  const handleClearConsole = useCallback(() => {
+    setNativeLogs([]);
+    setRunError(null);
+    useDBVStore.getState().setExecutionResult({
+      status: "idle",
+      exitCode: null,
+      executionTimeMs: 0,
+    });
+  }, [setRunError]);
 
   const step = trace[currentStep];
   const totalSteps = trace.length;
@@ -721,6 +861,7 @@ export function DBVPage() {
                 onToggleMaximize={restoreMaximized}
                 onCollapse={restoreMaximized}
                 initialTab={consoleTab}
+                onClear={handleClearConsole}
               />
             )}
           </div>
@@ -814,6 +955,7 @@ export function DBVPage() {
                 onToggleMaximize={() => toggleMaximize("console")}
                 onCollapse={() => setNarrowTab("visualization")}
                 initialTab={consoleTab}
+                onClear={handleClearConsole}
               />
             )}
           </div>
@@ -1023,6 +1165,7 @@ export function DBVPage() {
                           onToggleMaximize={() => toggleMaximize("console")}
                           onCollapse={() => toggleZoneVisibility("console")}
                           initialTab={consoleTab}
+                          onClear={handleClearConsole}
                         />
                       </Panel>
                     )}

@@ -41,10 +41,6 @@ A smooth, infinite vector drawing canvas designed for rapid architectural diagra
 | `←` | Step backward one line | DBV |
 | `Space` | Play / Pause execution | DBV |
 | `R` | Reset interpreter to beginning | DBV |
-| `P` / `B` / `M` / `H` | Pencil / Pen / Marker / Highlighter | Board |
-| `R` / `O` / `A` / `L` | Rectangle / Ellipse / Arrow / Line | Board |
-| `T` / `V` / `E` | Text / Select & Move / Eraser | Board |
-| `Ctrl + Z` / `Ctrl + Shift + Z` | Undo / Redo | Board |
 
 ---
 

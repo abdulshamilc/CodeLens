@@ -6,16 +6,18 @@
  * Execute code in the native Web Worker sandbox
  * @param {string} code
  * @param {Object} options
+ * @param {string} [options.customInput=""]
  * @param {(logs: Array<any>) => void} [options.onLogs]
- * @param {(summary: { logCount: number, executionTimeMs: number }) => void} [options.onDone]
- * @param {(error: { message: string, stack?: string }) => void} [options.onError]
- * @param {(msg: string) => void} [options.onTimeout]
+ * @param {(summary: { logCount: number, executionTimeMs: number, exitCode: number }) => void} [options.onDone]
+ * @param {(error: Object) => void} [options.onError]
+ * @param {(msg: Object) => void} [options.onTimeout]
  * @param {() => void} [options.onClear]
  * @param {number} [options.timeoutMs=5000]
  * @returns {{ terminate: () => void }}
  */
 export function executeNativeScript(code, options = {}) {
   const {
+    customInput = "",
     onLogs,
     onDone,
     onError,
@@ -36,7 +38,9 @@ export function executeNativeScript(code, options = {}) {
       watchdog = null;
     }
     if (worker) {
-      worker.terminate();
+      try {
+        worker.terminate();
+      } catch {}
       worker = null;
     }
   }
@@ -57,31 +61,71 @@ export function executeNativeScript(code, options = {}) {
       } else if (msg.type === "done") {
         const elapsed = Math.round(performance.now() - startTime);
         cleanup();
-        onDone?.({ logCount: msg.logCount, executionTimeMs: elapsed });
+        onDone?.({ logCount: msg.logCount, executionTimeMs: elapsed, exitCode: 0 });
       } else if (msg.type === "error") {
         cleanup();
-        onError?.({ message: msg.message, stack: msg.stack });
+        const errObj = msg.error || {
+          name: "RuntimeError",
+          message: msg.message || "Native runner execution error",
+          line: 1,
+          column: 1,
+          kind: "runtime",
+          stack: [],
+          sourceSnippet: "",
+          exitCode: 1,
+        };
+        onError?.(errObj);
       }
     };
 
     worker.onerror = (err) => {
       cleanup();
-      onError?.({ message: err.message || "Native worker error" });
+      const errObj = {
+        name: "WorkerError",
+        message: err?.message || "Native worker error",
+        line: 1,
+        column: 1,
+        kind: "runtime",
+        stack: [],
+        sourceSnippet: "",
+        exitCode: 1,
+      };
+      onError?.(errObj);
     };
 
     // Watchdog timer: hard kill at 5 seconds
     watchdog = setTimeout(() => {
       if (!isFinished && worker) {
         cleanup();
-        onTimeout?.("Execution timed out (5s limit). Infinite loop detected.");
+        const timeoutErr = {
+          name: "TimeoutError",
+          message: "Execution timed out (5s limit). Infinite loop detected.",
+          line: 1,
+          column: 1,
+          kind: "timeout",
+          stack: [],
+          sourceSnippet: "",
+          exitCode: 124,
+        };
+        onTimeout?.(timeoutErr);
       }
     }, timeoutMs);
 
-    // Launch worker
-    worker.postMessage({ type: "run", code });
+    // Launch worker with code and customInput
+    worker.postMessage({ type: "run", code, customInput });
   } catch (err) {
     cleanup();
-    onError?.({ message: err.message || "Failed to start native runner worker" });
+    const errObj = {
+      name: "StartupError",
+      message: err?.message || "Failed to start native runner worker",
+      line: 1,
+      column: 1,
+      kind: "runtime",
+      stack: [],
+      sourceSnippet: "",
+      exitCode: 1,
+    };
+    onError?.(errObj);
   }
 
   return {

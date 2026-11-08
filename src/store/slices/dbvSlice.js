@@ -20,6 +20,14 @@ export const dbvSlice = createSlice({
     breakpoints: [], // Array of line numbers for serializable state
     diagnostics: [], // Array of lint/syntax problems
     jumpTarget: null, // { line: number, col: number, ts: number }
+    language: "javascript", // Active language: "javascript" | "typescript" | "python"
+    customInput: "", // Custom standard input (stdin)
+    executionResult: {
+      status: "idle", // "idle" | "running" | "success" | "error" | "timeout"
+      exitCode: null,
+      executionTimeMs: 0,
+      logCount: 0,
+    },
     panelsVisible: {
       callstack: true,
       memory: true,
@@ -156,6 +164,18 @@ export const dbvSlice = createSlice({
     jumpToPosition: (state, action) => {
       state.jumpTarget = action.payload;
     },
+    setLanguage: (state, action) => {
+      state.language = action.payload || "javascript";
+    },
+    setCustomInput: (state, action) => {
+      state.customInput = action.payload ?? "";
+    },
+    setExecutionResult: (state, action) => {
+      state.executionResult = {
+        ...state.executionResult,
+        ...action.payload,
+      };
+    },
     togglePanel: (state, action) => {
       const id = action.payload;
       state.panelsVisible[id] = !state.panelsVisible[id];
@@ -185,6 +205,9 @@ export const {
   setBreakpoints,
   setDiagnostics,
   jumpToPosition,
+  setLanguage,
+  setCustomInput,
+  setExecutionResult,
   togglePanel,
 } = dbvSlice.actions;
 
