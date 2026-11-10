@@ -114,7 +114,7 @@ export function HomePage() {
           Press <kbd className="font-code px-1 py-0.5 rounded text-xs" style={{ background: "rgb(var(--color-surface2))", border: "1px solid rgb(var(--color-border))" }}>?</kbd> for keyboard shortcuts
         </span>
         <span>•</span>
-        <a href="https://www.linkedin.com/in/abdul-shamil-85b7681a8" target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 hover:underline font-medium" style={{ color: "rgb(var(--color-accent))" }} title="Visit Abdul Shamil's LinkedIn Profile">
+        <a href="https://www.linkedin.com/in/abdulshamil" target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 hover:underline font-medium" style={{ color: "rgb(var(--color-accent))" }} title="Visit Abdul Shamil's LinkedIn Profile">
           <span>Created by Abdul Shamil</span>
           <span className="text-[10px] text-white bg-[#0a66c2] px-1 rounded-sm leading-none py-0.5">in</span>
         </a>

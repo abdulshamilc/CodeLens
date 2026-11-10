@@ -25,6 +25,7 @@ import { formatCode } from "./editor/formatCode";
 import { EXAMPLES } from "./examples/examples.js";
 import { registerActiveRunner, cancelAllRunning } from "./engine/exampleLoader";
 import { runSelfTest } from "./engine/selfTest";
+import { GuidedTour, TOUR_STORAGE_KEY } from "./components/GuidedTour";
 
 export function DBVPage() {
   const {
@@ -68,6 +69,22 @@ export function DBVPage() {
   const [consoleTab, setConsoleTab] = useState("live");
   const [nativeLogs, setNativeLogs] = useState([]);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const [showTour, setShowTour] = useState(false);
+
+  // Auto-launch Guided Tour on first visit
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const completed = localStorage.getItem(TOUR_STORAGE_KEY);
+        if (!completed) {
+          const timer = setTimeout(() => {
+            setShowTour(true);
+          }, 650);
+          return () => clearTimeout(timer);
+        }
+      } catch {}
+    }
+  }, []);
 
   // Track screen width for narrow tab mode (< 900px)
   useEffect(() => {
@@ -714,6 +731,13 @@ export function DBVPage() {
         action: () => toggleMaximize("console"),
       },
       {
+        id: "guided-tour",
+        label: "Start Guided Tour (Feature Walkthrough)",
+        category: "Help",
+        shortcut: "",
+        action: () => setShowTour(true),
+      },
+      {
         id: "run-self-test",
         label: "Run self-test (Diagnostics & In-memory validation)",
         category: "System",
@@ -1052,6 +1076,7 @@ export function DBVPage() {
                       >
                         {/* Zone Header with Dual Run / Visualize controls */}
                         <div
+                          id="dbv-code-zone"
                           className="flex items-center justify-between px-2.5 sm:px-3 py-1.5 shrink-0 border-b select-none gap-1 sm:gap-2 overflow-hidden"
                           style={{
                             background: "rgb(var(--color-panel-surface2))",
@@ -1068,7 +1093,7 @@ export function DBVPage() {
                             </span>
                           </span>
 
-                          <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+                          <div id="dbv-run-controls" className="flex items-center gap-1 sm:gap-1.5 shrink-0">
                             {isRunning ? (
                               <Button
                                 size="xs"
@@ -1112,6 +1137,18 @@ export function DBVPage() {
                             >
                               <span className="hidden @[340px]:inline">📚 </span>
                               Examples
+                            </Button>
+
+                            <Button
+                              id="dbv-tour-btn"
+                              size="xs"
+                              variant="outline"
+                              onClick={() => setShowTour(true)}
+                              className="text-xs px-1.5 sm:px-2 py-0.5 cursor-pointer text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/10"
+                              title="Take a quick guided tour of DBV"
+                            >
+                              <span>🎓 </span>
+                              <span className="hidden @[340px]:inline">Tour</span>
                             </Button>
 
                             <Button
@@ -1234,6 +1271,7 @@ export function DBVPage() {
 
       {/* ── FIXED CONTROLS BAR (Bottom - Line-by-Line Next / Prev) ── */}
       <div
+        id="dbv-bottom-controls"
         className="px-3 sm:px-4 py-2.5 border-t flex flex-wrap items-center justify-between gap-3 shrink-0 select-none z-20 shadow-md"
         style={{
           background: "rgb(var(--color-panel-surface2))",
@@ -1367,6 +1405,13 @@ export function DBVPage() {
         isOpen={showCommandPalette}
         onClose={() => setShowCommandPalette(false)}
         commands={paletteCommands}
+      />
+
+      {/* Guided Tour for First-time & Returning Users */}
+      <GuidedTour
+        isOpen={showTour}
+        onClose={() => setShowTour(false)}
+        onComplete={() => setShowTour(false)}
       />
     </div>
   );

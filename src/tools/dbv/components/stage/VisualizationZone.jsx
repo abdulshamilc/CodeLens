@@ -312,7 +312,7 @@ export function VisualizationZone({
           </div>
 
           {/* 2. Current Executing Context (Center / Largest) */}
-          <div className="min-h-0 min-w-0 flex flex-col h-full overflow-hidden">
+          <div id="dbv-stage-panel" className="min-h-0 min-w-0 flex flex-col h-full overflow-hidden">
             <CurrentExecutingContextPanel
               ctx={displayedCtx}
               env={env}
@@ -326,7 +326,7 @@ export function VisualizationZone({
           </div>
 
           {/* 3. Web APIs, Event Loop & Queues */}
-          <div className="min-h-0 min-w-0 flex flex-col gap-2 @[640px]:col-span-2 @[920px]:col-span-1">
+          <div id="dbv-event-loop-zone" className="min-h-0 min-w-0 flex flex-col gap-2 @[640px]:col-span-2 @[920px]:col-span-1">
             <div className="grid grid-cols-1 @[450px]:grid-cols-2 @[640px]:grid-cols-4 @[920px]:grid-cols-1 gap-2.5">
               {/* Web APIs */}
               <div
