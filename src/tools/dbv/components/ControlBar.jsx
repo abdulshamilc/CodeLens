@@ -26,7 +26,7 @@ const EVENT_COLORS = {
     "event-loop-tick": "#ec4899",
 };
 export function ControlBar({ onRun }) {
-    const { trace, currentStep, isPlaying, playbackSpeed, isRunning, setCurrentStep, setIsPlaying, setIsRunning, setPlaybackSpeed, stepForward, stepBack, setTrace, setRunError, cancelAllRunning, } = useDBVStore();
+    const { trace, currentStep, isPlaying, playbackSpeed, isRunning, setCurrentStep, setIsPlaying, setIsRunning, setPlaybackSpeed, stepForward, stepBack, continueToNextBreakpoint, jumpToPrevBreakpoint, breakpoints = [], setTrace, setRunError, cancelAllRunning, } = useDBVStore();
     const playIntervalRef = useRef(null);
     // Auto-advance during playback
     useEffect(() => {
@@ -67,6 +67,10 @@ export function ControlBar({ onRun }) {
                 stepForward();
             if (e.key === "ArrowLeft")
                 stepBack();
+            if (e.key === "F8" && trace.length > 0) {
+                e.preventDefault();
+                continueToNextBreakpoint();
+            }
             if (e.key === " " && trace.length > 0) {
                 e.preventDefault();
                 setIsPlaying(!isPlaying);
@@ -110,6 +114,15 @@ export function ControlBar({ onRun }) {
 
         {/* Step Forward */}
         <CtrlBtn id="dbv-step-fwd" onClick={stepForward} disabled={!hasTrace || atEnd} title="Step Forward (→)" icon="▶"/>
+
+        {/* Continue to Next Breakpoint */}
+        <CtrlBtn
+          id="dbv-next-breakpoint"
+          onClick={continueToNextBreakpoint}
+          disabled={!hasTrace || atEnd}
+          title={breakpoints.length > 0 ? "Continue to Next Breakpoint (F8)" : "Continue to End (F8)"}
+          icon="⏭"
+        />
 
         {/* Divider */}
         <div className="w-px h-6" style={{ background: "rgb(var(--color-border))" }}/>

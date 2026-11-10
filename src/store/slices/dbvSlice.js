@@ -74,6 +74,42 @@ export const dbvSlice = createSlice({
       state.currentStep = Math.max(state.currentStep - 1, 0);
       state.isPlaying = false;
     },
+    continueToNextBreakpoint: (state) => {
+      if (state.trace.length === 0) return;
+      const bpSet = new Set(state.breakpoints);
+      let foundIndex = -1;
+      for (let i = state.currentStep + 1; i < state.trace.length; i++) {
+        const stepLine = state.trace[i]?.nodeRange?.startLine;
+        if (stepLine && bpSet.has(stepLine)) {
+          foundIndex = i;
+          break;
+        }
+      }
+      if (foundIndex !== -1) {
+        state.currentStep = foundIndex;
+      } else {
+        state.currentStep = state.trace.length - 1;
+        state.isPlaying = false;
+      }
+    },
+    jumpToPrevBreakpoint: (state) => {
+      if (state.trace.length === 0) return;
+      const bpSet = new Set(state.breakpoints);
+      let foundIndex = -1;
+      for (let i = state.currentStep - 1; i >= 0; i--) {
+        const stepLine = state.trace[i]?.nodeRange?.startLine;
+        if (stepLine && bpSet.has(stepLine)) {
+          foundIndex = i;
+          break;
+        }
+      }
+      if (foundIndex !== -1) {
+        state.currentStep = foundIndex;
+      } else {
+        state.currentStep = 0;
+      }
+      state.isPlaying = false;
+    },
     setIsRunning: (state, action) => {
       state.isRunning = Boolean(action.payload);
     },
@@ -191,6 +227,8 @@ export const {
   setPlaybackSpeed,
   stepForward,
   stepBack,
+  continueToNextBreakpoint,
+  jumpToPrevBreakpoint,
   setIsRunning,
   setRunError,
   bumpRunId,

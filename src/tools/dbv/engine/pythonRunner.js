@@ -4,6 +4,22 @@
 // functions, lists, dicts, custom input (stdin/input()), and rich Python error reporting.
 
 /**
+ * Generates step-by-step execution trace frames for Python code to render in DBV visualizer
+ * @param {string} code
+ * @param {string} [customInput=""]
+ * @returns {{ trace: Array<any>, logs: Array<any>, error: any }}
+ */
+export function generatePythonTrace(code, customInput = "") {
+  const runner = new PythonInterpreter(code, customInput, () => false, true);
+  const result = runner.execute();
+  return {
+    trace: runner.steps,
+    logs: result.logs,
+    error: result.error,
+  };
+}
+
+/**
  * Execute Python code in a sandboxed environment.
  * @param {string} code - Python source code
  * @param {Object} options
@@ -101,19 +117,80 @@ export function executePythonScript(code, options = {}) {
  * Python Interpreter implementation
  */
 export class PythonInterpreter {
-  constructor(sourceCode, customInput = "", checkTerminated = () => false) {
+  constructor(sourceCode, customInput = "", checkTerminated = () => false, enableTrace = false) {
     this.sourceCode = sourceCode;
     this.inputLines = typeof customInput === "string" ? customInput.split(/\r?\n/) : [];
     this.inputCursor = 0;
     this.checkTerminated = checkTerminated;
+    this.enableTrace = enableTrace;
 
     this.logs = [];
     this.logCounter = 0;
     this.maxLogs = 5000;
     this.globals = new Map();
     this.functions = new Map();
+    this.steps = [];
+    this.callStack = [
+      {
+        id: "ctx-global",
+        name: "Global",
+        type: "Global",
+        phase: "Execution",
+        thisBinding: "None",
+        variableEnvId: "env-global",
+      },
+    ];
+    this.activeScopes = new Map();
+    this.callCounter = 0;
+    this.heap = {};
 
     this.initBuiltins();
+    this.activeScopes.set("env-global", this.globals);
+  }
+
+  recordStep(lineNum, explanation, eventType = "execution-phase") {
+    if (!this.enableTrace) return;
+
+    const visibleEnvs = {};
+    for (const [envId, scopeMap] of this.activeScopes.entries()) {
+      const bindings = {};
+      for (const [k, v] of scopeMap.entries()) {
+        if (k === "True" || k === "False" || k === "None") continue;
+        if (typeof v === "object" && v !== null) {
+          const heapId = `heap-${k}`;
+          this.heap[heapId] = {
+            id: heapId,
+            kind: Array.isArray(v) ? "array" : "object",
+            properties: Array.isArray(v) ? Object.fromEntries(v.entries()) : v,
+          };
+          bindings[k] = { kind: "var", state: "initialized", value: { type: "ref", id: heapId } };
+        } else {
+          bindings[k] = { kind: "var", state: "initialized", value: v };
+        }
+      }
+      visibleEnvs[envId] = {
+        id: envId,
+        outer: envId === "env-global" ? null : "env-global",
+        bindings,
+      };
+    }
+
+    const step = {
+      index: this.steps.length,
+      nodeRange: { startLine: lineNum, endLine: lineNum, startCol: 1, endCol: 40 },
+      eventType,
+      explanation,
+      callStack: JSON.parse(JSON.stringify(this.callStack)),
+      environments: JSON.parse(JSON.stringify(visibleEnvs)),
+      heap: JSON.parse(JSON.stringify(this.heap)),
+      webApis: {},
+      microtaskQueue: [],
+      macrotaskQueue: [],
+      eventLoopState: "running",
+      consoleOutput: this.logs.map((l) => ({ ...l, text: l.args.join(" ") })),
+      changedBindings: [],
+    };
+    this.steps.push(step);
   }
 
   initBuiltins() {
@@ -222,6 +299,9 @@ export class PythonInterpreter {
         // Dedented out of current block
         break;
       }
+
+      const lineNum = i + 1;
+      this.recordStep(lineNum, `Line ${lineNum}: ${trimmed}`);
 
       // 1. def func(...)
       if (trimmed.startsWith("def ")) {
@@ -558,7 +638,26 @@ export class PythonInterpreter {
         fnScope.set(param, args[idx] ?? null);
       });
       const lines = this.sourceCode.split("\n");
+
+      this.callCounter++;
+      const frameId = `ctx-${fnName}-${this.callCounter}`;
+      const envId = `env-${frameId}`;
+      this.callStack.push({
+        id: frameId,
+        name: fnName,
+        type: "Function",
+        phase: "Execution",
+        thisBinding: "None",
+        variableEnvId: envId,
+      });
+      this.activeScopes.set(envId, fnScope);
+      this.recordStep(fn.bodyStart, `Calling function ${fnName}()`, "call");
+
       const flow = this.executeBlock(lines, fn.bodyStart, fn.bodyEnd, fn.indent, fnScope);
+
+      this.recordStep(lineNum, `Returning from ${fnName}()`, "return");
+      this.callStack.pop();
+      this.activeScopes.delete(envId);
       return flow?.value ?? null;
     }
 

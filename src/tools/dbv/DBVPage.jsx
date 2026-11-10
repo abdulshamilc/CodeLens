@@ -19,6 +19,7 @@ import { ExamplesDrawer } from "./components/ExamplesDrawer";
 import { Button, Slider, Tabs } from "../../shared/ui";
 import { compileAndRun } from "./engine/compilerService";
 import { transpileTypeScript } from "./engine/typeScriptCompiler";
+import { generatePythonTrace } from "./engine/pythonRunner";
 import { CommandPalette } from "./components/editor/CommandPalette";
 import { formatCode } from "./editor/formatCode";
 import { EXAMPLES } from "./examples/examples.js";
@@ -273,9 +274,32 @@ export function DBVPage() {
         return;
       }
 
-      // If language is Python, fallback gracefully to Run mode
+      // If language is Python, generate step-by-step visual trace directly
       if (currentLang === "python") {
-        runNative(currentCode);
+        stopExecution();
+        useDBVStore.getState().startRun();
+        const thisRunId = useDBVStore.getState().runId;
+        setConsoleTab("live");
+
+        try {
+          const pyRes = generatePythonTrace(currentCode, currentInput);
+          if (useDBVStore.getState().runId === thisRunId) {
+            setTrace(pyRes.trace);
+            if (pyRes.error) {
+              setRunError(pyRes.error);
+              useDBVStore.getState().setExecutionResult({ status: "error", exitCode: 1, executionTimeMs: 0 });
+            } else {
+              setRunError(null);
+              useDBVStore.getState().setExecutionResult({ status: "success", exitCode: 0, executionTimeMs: 0 });
+            }
+            setIsRunning(false);
+          }
+        } catch (err) {
+          if (useDBVStore.getState().runId === thisRunId) {
+            setRunError(err);
+            setIsRunning(false);
+          }
+        }
         return;
       }
 

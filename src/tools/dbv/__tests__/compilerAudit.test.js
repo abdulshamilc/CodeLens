@@ -11,7 +11,11 @@ import {
   getLanguageConfig,
 } from "../engine/compilerService";
 import { transpileTypeScript } from "../engine/typeScriptCompiler";
-import { executePythonScript, PythonInterpreter } from "../engine/pythonRunner";
+import { executePythonScript, PythonInterpreter, generatePythonTrace } from "../engine/pythonRunner";
+import dbvReducer, {
+  continueToNextBreakpoint,
+  jumpToPrevBreakpoint,
+} from "@/store/slices/dbvSlice";
 
 describe("Compiler & Execution Engine Audit (16 Core Scenarios)", () => {
   // ─── Scenario 1: Valid Source Code ──────────────────────────────────────────
@@ -416,5 +420,62 @@ print("Even sum:", total)
     expect(getLanguageConfig("typescript").fileName).toBe("main.ts");
     expect(getLanguageConfig("python").fileName).toBe("main.py");
     expect(getLanguageConfig("csharp")).toBeNull();
+  });
+
+  // ─── Visualizer: Breakpoint Navigation ──────────────────────────────────────
+  it("Breakpoints: continueToNextBreakpoint advances forward to the breakpoint step", () => {
+    const trace = [
+      { index: 0, nodeRange: { startLine: 1 } },
+      { index: 1, nodeRange: { startLine: 2 } },
+      { index: 2, nodeRange: { startLine: 3 } },
+      { index: 3, nodeRange: { startLine: 4 } },
+      { index: 4, nodeRange: { startLine: 5 } },
+    ];
+    let state = {
+      trace,
+      currentStep: 0,
+      breakpoints: [3, 5],
+      isPlaying: true,
+    };
+
+    // Jump to next breakpoint (line 3 -> index 2)
+    state = dbvReducer(state, continueToNextBreakpoint());
+    expect(state.currentStep).toBe(2);
+
+    // Jump to next breakpoint (line 5 -> index 4)
+    state = dbvReducer(state, continueToNextBreakpoint());
+    expect(state.currentStep).toBe(4);
+
+    // Jump to previous breakpoint (line 3 -> index 2)
+    state = dbvReducer(state, jumpToPrevBreakpoint());
+    expect(state.currentStep).toBe(2);
+  });
+
+  // ─── Visualizer: Python Step-by-Step Tracing ────────────────────────────────
+  it("Python Visualizer: generatePythonTrace yields execution frames and environments", () => {
+    const pyCode = `
+def add(a, b):
+    result = a + b
+    return result
+
+total = add(10, 25)
+print("Total:", total)
+`;
+    const res = generatePythonTrace(pyCode);
+    expect(res.error).toBeNull();
+    expect(res.trace.length).toBeGreaterThan(0);
+
+    // Verify first step has GEC
+    const firstStep = res.trace[0];
+    expect(firstStep.callStack[0].name).toBe("Global");
+    expect(firstStep.nodeRange.startLine).toBeDefined();
+
+    // Verify function call frame is captured
+    const callStep = res.trace.find((s) => s.callStack.some((c) => c.name === "add"));
+    expect(callStep).toBeDefined();
+    expect(callStep.callStack.length).toBe(2); // Global + add()
+
+    // Output captured
+    expect(res.logs[0].args[0]).toBe("Total: 35");
   });
 });
