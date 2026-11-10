@@ -244,10 +244,11 @@ export const whiteboardSlice = createSlice({
       }
     },
     updateElement: (state, action) => {
-      const { id, partial } = action.payload;
+      const { id, partial, updates } = action.payload;
+      const patch = partial || updates || {};
       const idx = state.elements.findIndex((el) => el.id === id);
       if (idx !== -1) {
-        state.elements[idx] = { ...state.elements[idx], ...partial };
+        state.elements[idx] = { ...state.elements[idx], ...patch };
       }
     },
     moveSelected: (state, action) => {

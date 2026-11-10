@@ -9,6 +9,7 @@ import {
   CONNECTOR_TOOLS,
   DEVELOPER_TOOLS,
 } from "../types";
+import { DIAGRAM_TEMPLATES } from "../utils/templates";
 
 export function WhiteboardToolbar({ onOpenExport }) {
   const {
@@ -35,9 +36,11 @@ export function WhiteboardToolbar({ onOpenExport }) {
     setShowLayersPanel,
     showPropertiesPanel,
     setShowPropertiesPanel,
+    addElement,
+    setSelectedIds,
   } = useWhiteboardStore();
 
-  const [activeMenu, setActiveMenu] = useState(null); // 'shapes' | 'dev' | 'connectors' | 'bg' | null
+  const [activeMenu, setActiveMenu] = useState(null); // 'shapes' | 'dev' | 'templates' | 'connectors' | 'bg' | null
   const menuRef = useRef(null);
 
   // Close menus on clicking outside
@@ -53,6 +56,17 @@ export function WhiteboardToolbar({ onOpenExport }) {
 
   const selectTool = (toolId) => {
     setTool(toolId);
+    setActiveMenu(null);
+  };
+
+  const handleInsertTemplate = (template) => {
+    const originX = Math.round((-viewport.x + 140) / viewport.zoom);
+    const originY = Math.round((-viewport.y + 120) / viewport.zoom);
+    const elementsToInsert = template.generate(originX, originY);
+    elementsToInsert.forEach((el) => {
+      addElement(el);
+    });
+    setSelectedIds(elementsToInsert.map((e) => e.id));
     setActiveMenu(null);
   };
 
@@ -260,6 +274,50 @@ export function WhiteboardToolbar({ onOpenExport }) {
                 ))}
               </div>
             </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Architecture Templates Flyout ── */}
+      <div className="relative">
+        <button
+          onClick={() => setActiveMenu(activeMenu === "templates" ? null : "templates")}
+          title="Architecture & Flow Templates"
+          className="h-8 px-2 rounded-xl flex items-center gap-1 font-bold text-xs transition-all cursor-pointer text-slate-300 hover:bg-slate-800"
+          style={{
+            background: activeMenu === "templates" ? "rgb(99, 102, 241)" : "transparent",
+            color: activeMenu === "templates" ? "#ffffff" : "rgb(203, 213, 225)",
+          }}
+        >
+          <span>🏗️</span>
+          <span className="hidden sm:inline">Templates</span>
+          <span className="text-[9px] opacity-70">▼</span>
+        </button>
+
+        {activeMenu === "templates" && (
+          <div
+            className="absolute top-10 left-0 w-72 max-h-88 overflow-y-auto rounded-xl p-2 shadow-2xl backdrop-blur-xl border border-slate-700 bg-slate-900/95 z-50 text-xs flex flex-col gap-1.5"
+          >
+            <div className="px-2 py-1 text-[10px] font-semibold text-indigo-400 uppercase tracking-wider">
+              Developer Architecture Templates
+            </div>
+            {DIAGRAM_TEMPLATES.map((tpl) => (
+              <button
+                key={tpl.id}
+                onClick={() => handleInsertTemplate(tpl)}
+                className="flex items-start gap-2 p-2 rounded-lg text-left hover:bg-slate-800 text-slate-200 transition-colors cursor-pointer group"
+              >
+                <span className="text-xl leading-none mt-0.5">{tpl.icon}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold text-indigo-300 group-hover:text-indigo-200">
+                    {tpl.title}
+                  </div>
+                  <div className="text-[11px] text-slate-400 leading-snug line-clamp-2">
+                    {tpl.description}
+                  </div>
+                </div>
+              </button>
+            ))}
           </div>
         )}
       </div>

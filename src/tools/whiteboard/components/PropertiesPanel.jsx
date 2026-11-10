@@ -251,6 +251,22 @@ export function PropertiesPanel() {
             <span>📝</span> Text Typography
           </label>
 
+          {/* Direct Text / Label Input */}
+          {primaryEl && (
+            <div className="space-y-1">
+              <label className="text-[10px] text-slate-400 uppercase tracking-wider">
+                {isText ? "Text Content" : "Inner Label"}
+              </label>
+              <input
+                type="text"
+                placeholder={isText ? "Type text..." : "Add label (e.g. PostgreSQL, API Gateway)..."}
+                value={primaryEl.text || ""}
+                onChange={(e) => updateElement(primaryEl.id, { text: e.target.value })}
+                className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-slate-200 outline-none focus:border-indigo-500 text-xs"
+              />
+            </div>
+          )}
+
           <div className="flex items-center gap-1.5">
             <select
               value={primaryEl ? (primaryEl.fontFamily ?? fontFamily) : fontFamily}

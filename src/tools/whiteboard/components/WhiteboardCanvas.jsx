@@ -20,7 +20,7 @@ import {
 let _elId = 0;
 const nextElId = (prefix = "el") => `${prefix}-${Date.now()}-${++_elId}`;
 
-const SNAP_STEP = 16;
+const SNAP_STEP = 24;
 function snapVal(val, enabled) {
   if (!enabled) return val;
   return Math.round(val / SNAP_STEP) * SNAP_STEP;
@@ -68,6 +68,7 @@ export function WhiteboardCanvas() {
   const [textEditor, setTextEditor] = useState(null); // { visible, elId, isNew, x, y, screenX, screenY, width, height, text, ... }
   const [codeEditor, setCodeEditor] = useState(null); // { visible, elId, code, language, ... }
   const [marqueeBox, setMarqueeBox] = useState(null); // { startX, startY, currentX, currentY }
+  const [hoverCursor, setHoverCursor] = useState(null);
 
   const isPanningRef = useRef(false);
   const isDraggingRef = useRef(false);
@@ -560,7 +561,48 @@ export function WhiteboardCanvas() {
     }
 
     // Update active drawing draft
-    if (!activeDraft) return;
+    if (!activeDraft) {
+      if (tool === "select") {
+        if (selectedIds.length === 1) {
+          const selectedEl = elements.find((el) => el.id === selectedIds[0]);
+          if (selectedEl && !selectedEl.locked) {
+            const handleHit = hitTestResizeHandle(selectedEl, world, viewport.zoom);
+            if (handleHit) {
+              if (handleHit === "nw" || handleHit === "se") {
+                setHoverCursor("nwse-resize");
+                return;
+              }
+              if (handleHit === "ne" || handleHit === "sw") {
+                setHoverCursor("nesw-resize");
+                return;
+              }
+              if (handleHit === "n" || handleHit === "s") {
+                setHoverCursor("ns-resize");
+                return;
+              }
+              if (handleHit === "e" || handleHit === "w") {
+                setHoverCursor("ew-resize");
+                return;
+              }
+              if (handleHit === "rot") {
+                setHoverCursor("crosshair");
+                return;
+              }
+            }
+          }
+        }
+
+        const hoveredEl = elements.slice().reverse().find((el) => hitTestElement(el, world, 6 / viewport.zoom));
+        if (hoveredEl) {
+          setHoverCursor("move");
+        } else if (hoverCursor) {
+          setHoverCursor(null);
+        }
+      } else if (hoverCursor) {
+        setHoverCursor(null);
+      }
+      return;
+    }
 
     if (activeDraft.type === "pen" || activeDraft.type === "brush") {
       setActiveDraft({
@@ -595,6 +637,7 @@ export function WhiteboardCanvas() {
     isRotatingRef.current = false;
     activeHandleRef.current = null;
     setMarqueeBox(null);
+    setHoverCursor(null);
 
     if (activeDraft) {
       const isFreehand = activeDraft.type === "pen" || activeDraft.type === "brush";
@@ -731,9 +774,10 @@ export function WhiteboardCanvas() {
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
+      onPointerLeave={() => setHoverCursor(null)}
       onDoubleClick={handleDoubleClick}
       className={`relative w-full h-full overflow-hidden select-none ${cursorClass}`}
-      style={{ touchAction: "none" }}
+      style={{ touchAction: "none", cursor: hoverCursor || undefined }}
     >
       <canvas ref={canvasRef} className="absolute inset-0 block w-full h-full" />
 

@@ -25,6 +25,7 @@ import {
   hitTestAnchors,
 } from "../utils/render";
 import { importFromJSON, getBoundingBox } from "../utils/export";
+import { DIAGRAM_TEMPLATES } from "../utils/templates";
 
 describe("Whiteboard Audit & Developer Diagramming Suite", () => {
   let initialState;
@@ -387,6 +388,51 @@ describe("Whiteboard Audit & Developer Diagramming Suite", () => {
       expect(imported[0].code).toBe("console.log(42);");
       expect(imported[1].routing).toBe("elbow");
       expect(imported[1].fromAnchor).toBe("right");
+    });
+  });
+
+  describe("Developer Diagram Templates & Shape Labeling", () => {
+    it("exports all required developer templates with generator functions", () => {
+      expect(DIAGRAM_TEMPLATES.length).toBeGreaterThanOrEqual(4);
+      for (const tpl of DIAGRAM_TEMPLATES) {
+        expect(tpl.id).toBeDefined();
+        expect(tpl.title).toBeDefined();
+        expect(typeof tpl.generate).toBe("function");
+
+        const elements = tpl.generate(200, 150);
+        expect(Array.isArray(elements)).toBe(true);
+        expect(elements.length).toBeGreaterThan(0);
+
+        for (const el of elements) {
+          expect(el.id).toBeDefined();
+          expect(el.type).toBeDefined();
+          expect(typeof el.x).toBe("number");
+          expect(typeof el.y).toBe("number");
+          expect(typeof el.width).toBe("number");
+          expect(typeof el.height).toBe("number");
+        }
+      }
+    });
+
+    it("allows updating inner text label on shape elements via updateElement", () => {
+      const serverEl = {
+        id: "server-test-1",
+        type: "server",
+        x: 100,
+        y: 100,
+        width: 140,
+        height: 100,
+        text: "",
+      };
+
+      const s1 = whiteboardReducer(initialState, addElement(serverEl));
+      expect(s1.elements[0].text).toBe("");
+
+      const s2 = whiteboardReducer(
+        s1,
+        updateElement({ id: "server-test-1", updates: { text: "Auth Microservice" } })
+      );
+      expect(s2.elements[0].text).toBe("Auth Microservice");
     });
   });
 });
