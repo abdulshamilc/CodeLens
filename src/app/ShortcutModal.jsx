@@ -5,22 +5,38 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useAppStore } from "./useAppStore";
 const GLOBAL_SHORTCUTS = [
     {
-        title: "Global",
+        title: "Main Navigation",
         shortcuts: [
+            { keys: ["Ctrl/Alt", "1"], description: "Switch to CodeLens DBV (JS Visualizer)" },
+            { keys: ["Ctrl/Alt", "2"], description: "Switch to CodeLens Board (Whiteboard)" },
+            { keys: ["Ctrl/Alt", "3"], description: "Switch to CodeLens DSV (Data Structures)" },
+            { keys: ["Alt", "D"], description: "Quick jump to DBV" },
+            { keys: ["Alt", "B"], description: "Quick jump to Board" },
+            { keys: ["Alt", "S"], description: "Quick jump to DSV" },
             { keys: ["?"], description: "Open/close shortcut help" },
             { keys: ["D"], description: "Toggle dark/light theme" },
-            { keys: ["Ctrl", "1"], description: "Go to CodeLens DBV" },
-            { keys: ["Ctrl", "2"], description: "Go to CodeLens Board" },
         ],
     },
     {
-        title: "CodeLens DBV – Control",
+        title: "CodeLens Board (Whiteboard)",
         shortcuts: [
-            { keys: ["Ctrl", "Enter"], description: "Run / Analyze code" },
+            { keys: ["S"], description: "Select & Move tool (or V)" },
+            { keys: ["H"], description: "Hand / Pan tool" },
+            { keys: ["P"], description: "Pencil / Pen freehand drawing" },
+            { keys: ["E"], description: "Eraser tool" },
+            { keys: ["T"], description: "Text tool (inline editing)" },
+            { keys: ["Enter"], description: "Commit & save text" },
+            { keys: ["Shift", "Enter"], description: "New line in text" },
+            { keys: ["Esc"], description: "Cancel text edit or close modals" },
+        ],
+    },
+    {
+        title: "CodeLens Playback (DBV & DSV)",
+        shortcuts: [
+            { keys: ["Space"], description: "Play / Pause animation" },
             { keys: ["→"], description: "Step forward" },
             { keys: ["←"], description: "Step back" },
-            { keys: ["Space"], description: "Play / Pause" },
-            { keys: ["R"], description: "Reset" },
+            { keys: ["R"], description: "Reset playback to step 0" },
         ],
     },
 ];

@@ -25,6 +25,17 @@ const TOOLS = [
         gradient: "linear-gradient(135deg, rgba(34,197,94,0.2) 0%, rgba(6,182,212,0.2) 100%)",
         accentColor: "34 197 94",
     },
+    {
+        id: "dsv",
+        path: "/dsv",
+        icon: "🌳",
+        title: "CodeLens DSV",
+        subtitle: "Data Structure Visualization",
+        description: "Step-by-step interactive visualizer for arrays, linked lists, trees, heaps, graphs, hashing, and sorting algorithms.",
+        tags: ["Arrays & LL", "Trees & BST", "Binary Heap", "Graphs (BFS/DFS)", "Sorting"],
+        gradient: "linear-gradient(135deg, rgba(56,189,248,0.2) 0%, rgba(99,102,241,0.2) 100%)",
+        accentColor: "56 189 248",
+    },
 ];
 const containerVariants = {
     hidden: {},
@@ -59,7 +70,7 @@ export function HomePage() {
       </motion.div>
 
       {/* Tool Cards */}
-      <motion.div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-4xl" variants={containerVariants} initial="hidden" animate="visible">
+      <motion.div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full max-w-6xl" variants={containerVariants} initial="hidden" animate="visible">
         {TOOLS.map((tool) => (<motion.article key={tool.id} id={`tool-card-${tool.id}`} variants={cardVariants} whileHover={{ scale: 1.02, y: -4 }} whileTap={{ scale: 0.98 }} onClick={() => navigate(tool.path)} className="cursor-pointer rounded-2xl p-6 flex flex-col gap-4 transition-shadow" style={{
                 background: tool.gradient,
                 border: `1px solid rgba(${tool.accentColor}, 0.3)`,

@@ -34,6 +34,7 @@ export function WhiteboardCanvas() {
     elements,
     selectedIds,
     tool,
+    setTool,
     strokeColor,
     fillColor,
     strokeWidth,
@@ -66,6 +67,10 @@ export function WhiteboardCanvas() {
   // Active interaction states
   const [activeDraft, setActiveDraft] = useState(null);
   const [textEditor, setTextEditor] = useState(null); // { visible, elId, isNew, x, y, screenX, screenY, width, height, text, ... }
+  const textEditorRef = useRef(textEditor);
+  useEffect(() => {
+    textEditorRef.current = textEditor;
+  }, [textEditor]);
   const [codeEditor, setCodeEditor] = useState(null); // { visible, elId, code, language, ... }
   const [marqueeBox, setMarqueeBox] = useState(null); // { startX, startY, currentX, currentY }
   const [hoverCursor, setHoverCursor] = useState(null);
@@ -238,9 +243,14 @@ export function WhiteboardCanvas() {
 
     if (e.button !== 0) return; // Only left button for drawing/selecting
 
+    // If text editor is currently open and user clicks on canvas, commit existing text first!
+    if (textEditorRef.current?.visible) {
+      commitText();
+    }
+
     // ── Text Tool Click: Open In-Place Text Editor ──────────────────────────
     if (tool === "text") {
-      setTextEditor({
+      const newEditor = {
         visible: true,
         isNew: true,
         x: snapVal(world.x, snapToGrid),
@@ -251,7 +261,9 @@ export function WhiteboardCanvas() {
         fontSize,
         fontFamily,
         color: strokeColor,
-      });
+      };
+      setTextEditor(newEditor);
+      textEditorRef.current = newEditor;
       return;
     }
 
@@ -679,7 +691,7 @@ export function WhiteboardCanvas() {
 
     if (hit.type === "text") {
       const screenPos = canvasToScreen(hit.x, hit.y, viewport);
-      setTextEditor({
+      const editState = {
         visible: true,
         isNew: false,
         elId: hit.id,
@@ -691,7 +703,9 @@ export function WhiteboardCanvas() {
         fontSize: hit.fontSize ?? 16,
         fontFamily: hit.fontFamily ?? '"Inter", sans-serif',
         color: hit.strokeColor ?? "#ffffff",
-      });
+      };
+      setTextEditor(editState);
+      textEditorRef.current = editState;
     } else if (hit.type === "code-block") {
       setCodeEditor({
         visible: true,
@@ -710,42 +724,70 @@ export function WhiteboardCanvas() {
 
   // ── Commit Text Input ─────────────────────────────────────────────────────
   const commitText = () => {
-    if (!textEditor) return;
-    const trimmed = textEditor.text.trim();
+    const editor = textEditorRef.current;
+    if (!editor || !editor.visible) return;
 
-    if (trimmed.length > 0) {
-      if (textEditor.isNew) {
-        const newEl = {
-          id: nextElId("txt"),
-          type: "text",
-          x: textEditor.x,
-          y: textEditor.y,
-          width: Math.max(80, trimmed.length * 10),
-          height: (textEditor.fontSize ?? 16) * 1.5,
-          strokeColor: textEditor.color || strokeColor,
-          fillColor: "transparent",
-          strokeWidth: 0,
-          strokeStyle: "solid",
-          opacity,
-          text: textEditor.text,
-          fontSize: textEditor.fontSize ?? fontSize,
-          fontFamily: textEditor.fontFamily ?? fontFamily,
-          fontWeight,
-          fontStyle,
-          textDecoration,
-          textAlign,
-          textBgColor,
-        };
-        addElement(newEl);
-      } else if (textEditor.elId) {
-        updateElement(textEditor.elId, { text: textEditor.text });
+    try {
+      const trimmed = (editor.text || "").trim();
+      if (trimmed.length > 0) {
+        if (editor.isNew) {
+          let measuredWidth = 120;
+          let measuredHeight = (editor.fontSize ?? fontSize ?? 16) * 1.5;
+          const canvas = canvasRef.current;
+          if (canvas) {
+            const ctx = canvas.getContext("2d");
+            if (ctx) {
+              ctx.font = `${fontWeight === "bold" ? "bold " : ""}${editor.fontSize ?? fontSize ?? 16}px ${editor.fontFamily ?? fontFamily ?? '"Inter", sans-serif'}`;
+              const lines = editor.text.split("\n");
+              let maxW = 0;
+              lines.forEach((l) => {
+                const lw = ctx.measureText(l).width;
+                if (lw > maxW) maxW = lw;
+              });
+              measuredWidth = Math.max(60, Math.round(maxW + 24));
+              measuredHeight = Math.max(28, Math.round(lines.length * ((editor.fontSize ?? fontSize ?? 16) * 1.35) + 12));
+            }
+          }
+
+          const newEl = {
+            id: nextElId("txt"),
+            type: "text",
+            x: editor.x,
+            y: editor.y,
+            width: measuredWidth,
+            height: measuredHeight,
+            strokeColor: editor.color || strokeColor,
+            fillColor: "transparent",
+            strokeWidth: 0,
+            strokeStyle: "solid",
+            opacity,
+            text: editor.text,
+            fontSize: editor.fontSize ?? fontSize ?? 16,
+            fontFamily: editor.fontFamily ?? fontFamily ?? '"Inter", sans-serif',
+            fontWeight,
+            fontStyle,
+            textDecoration,
+            textAlign,
+            textBgColor,
+          };
+          addElement(newEl);
+          setSelectedIds([newEl.id]);
+          if (typeof setTool === "function") {
+            setTool("select");
+          }
+        } else if (editor.elId) {
+          updateElement(editor.elId, { text: editor.text });
+        }
+      } else if (!editor.isNew && editor.elId) {
+        // If user erased text completely, remove orphan
+        setElements(elements.filter((el) => el.id !== editor.elId));
       }
-    } else if (!textEditor.isNew && textEditor.elId) {
-      // If user erased text completely, remove orphan
-      setElements(elements.filter((el) => el.id !== textEditor.elId));
+    } catch (err) {
+      console.error("Error committing text:", err);
+    } finally {
+      setTextEditor(null);
+      textEditorRef.current = null;
     }
-
-    setTextEditor(null);
   };
 
   // ── Commit Code Block Edit ────────────────────────────────────────────────
@@ -782,31 +824,79 @@ export function WhiteboardCanvas() {
       <canvas ref={canvasRef} className="absolute inset-0 block w-full h-full" />
 
       {/* ── Floating Inline Multiline Text Editor ── */}
-      {textEditor?.visible && (
-        <textarea
-          autoFocus
-          value={textEditor.text}
-          onChange={(e) => setTextEditor({ ...textEditor, text: e.target.value })}
-          onBlur={commitText}
-          onKeyDown={(e) => {
-            // Enter creates newline; Shift+Enter creates newline; Escape cancels
-            if (e.key === "Escape") {
-              setTextEditor(null);
-            }
-          }}
-          placeholder="Type explanation or label..."
-          className="absolute z-40 p-2.5 rounded-lg border border-indigo-500 bg-slate-900/95 text-white font-sans text-sm resize shadow-2xl outline-none"
-          style={{
-            left: `${textEditor.screenX}px`,
-            top: `${textEditor.screenY}px`,
-            minWidth: "180px",
-            minHeight: "56px",
-            color: textEditor.color || strokeColor,
-            fontSize: `${textEditor.fontSize || 16}px`,
-            fontFamily: textEditor.fontFamily || '"Inter", sans-serif',
-          }}
-        />
-      )}
+      {textEditor?.visible && (() => {
+        const screenPos = canvasToScreen(textEditor.x, textEditor.y, viewport);
+        return (
+          <div
+            className="absolute z-40 flex flex-col gap-1 shadow-2xl animate-fadeIn"
+            style={{
+              left: `${Math.max(12, screenPos.x)}px`,
+              top: `${Math.max(12, screenPos.y)}px`,
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+            onKeyUp={(e) => e.stopPropagation()}
+          >
+            <textarea
+              autoFocus
+              value={textEditor.text}
+              onChange={(e) => {
+                const next = { ...textEditor, text: e.target.value };
+                setTextEditor(next);
+                textEditorRef.current = next;
+              }}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                // Enter without shift commits
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  commitText();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  setTextEditor(null);
+                  textEditorRef.current = null;
+                }
+              }}
+              onKeyUp={(e) => e.stopPropagation()}
+              placeholder="Type text... (Enter to save, Shift+Enter for new line)"
+              className="p-2.5 rounded-xl border-2 border-indigo-500 bg-slate-900/98 text-white font-sans text-sm resize shadow-2xl outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/40"
+              style={{
+                minWidth: "220px",
+                minHeight: "64px",
+                color: textEditor.color || strokeColor,
+                fontSize: `${textEditor.fontSize || 16}px`,
+                fontFamily: textEditor.fontFamily || '"Inter", sans-serif',
+              }}
+            />
+            <div className="flex items-center justify-between text-[11px] bg-slate-950/95 px-2.5 py-1 rounded-lg border border-slate-800 text-slate-300 shadow-md">
+              <span className="text-slate-400">⏎ Enter to save • Shift+⏎ new line</span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    commitText();
+                  }}
+                  className="px-2.5 py-0.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white font-bold transition cursor-pointer shadow-sm text-xs"
+                >
+                  ✓ Done
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setTextEditor(null);
+                    textEditorRef.current = null;
+                  }}
+                  className="px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition cursor-pointer text-xs"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Modal Code Editor for Dedicated Code Blocks ── */}
       {codeEditor?.visible && (

@@ -8,6 +8,7 @@ import { CodeLensLogo } from "./CodeLensLogo";
 const TOOLS = [
     { path: "/dbv", label: "DBV", icon: "⚡", subtitle: "CodeLens DBV" },
     { path: "/whiteboard", label: "Board", icon: "✏️", subtitle: "CodeLens Board" },
+    { path: "/dsv", label: "DSV", icon: "🌳", subtitle: "CodeLens DSV" },
 ];
 export function TopBar() {
     const { theme, toggleTheme, setShortcutModalOpen } = useAppStore();

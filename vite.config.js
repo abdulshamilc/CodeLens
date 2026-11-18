@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { VitePWA } from "vite-plugin-pwa";
+import { fileURLToPath, URL } from "node:url";
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -18,7 +19,7 @@ export default defineConfig({
         scope: "/",
         name: "CodeLens",
         short_name: "CodeLens",
-        description: "CodeLens – See inside your code. JavaScript execution visualizer & whiteboard",
+        description: "CodeLens – See inside your code. JavaScript visualizer, whiteboard & data structure suite",
         theme_color: "#0f172a",
         background_color: "#0f172a",
         display: "standalone",
@@ -56,5 +57,20 @@ export default defineConfig({
   ],
   // Worker support for the DBV execution engine
   worker: { format: "es" },
-  resolve: { alias: { "@": "/src" } },
+  resolve: {
+    alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
+    dedupe: ["react", "react-dom", "react-redux", "react-router-dom"],
+  },
+  optimizeDeps: {
+    include: [
+      "react",
+      "react-dom",
+      "react-dom/client",
+      "react-redux",
+      "@reduxjs/toolkit",
+      "react-router-dom",
+      "framer-motion",
+      "zustand",
+    ],
+  },
 });

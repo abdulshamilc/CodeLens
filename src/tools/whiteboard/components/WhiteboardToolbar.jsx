@@ -11,7 +11,7 @@ import {
 } from "../types";
 import { DIAGRAM_TEMPLATES } from "../utils/templates";
 
-export function WhiteboardToolbar({ onOpenExport }) {
+export function WhiteboardToolbar({ onOpenExport, onOpenDataStructure }) {
   const {
     tool,
     setTool,
@@ -92,12 +92,23 @@ export function WhiteboardToolbar({ onOpenExport }) {
       <div className="flex items-center gap-1" role="toolbar" aria-label="Basic Tools">
         {BASIC_TOOLS.map((t) => {
           const isActive = tool === t.id;
+          const shortcutKey =
+            t.id === "select"
+              ? "S"
+              : t.id === "hand"
+              ? "H"
+              : t.id === "pen"
+              ? "P"
+              : t.id === "eraser"
+              ? "E"
+              : null;
+
           return (
             <button
               key={t.id}
               onClick={() => selectTool(t.id)}
-              title={t.name}
-              className="relative w-8 h-8 rounded-xl flex items-center justify-center font-bold text-sm transition-all cursor-pointer"
+              title={shortcutKey ? `${t.name} (${shortcutKey})` : t.name}
+              className="relative w-8 h-8 rounded-xl flex items-center justify-center font-bold text-sm transition-all cursor-pointer group"
               style={{
                 background: isActive ? "rgb(99, 102, 241)" : "transparent",
                 color: isActive ? "#ffffff" : "rgb(203, 213, 225)",
@@ -105,6 +116,11 @@ export function WhiteboardToolbar({ onOpenExport }) {
               }}
             >
               <span>{t.icon}</span>
+              {shortcutKey && (
+                <span className="absolute -bottom-1 -right-0.5 text-[8px] font-mono opacity-60 group-hover:opacity-100 bg-slate-950/80 px-0.5 rounded leading-none text-slate-400">
+                  {shortcutKey}
+                </span>
+              )}
             </button>
           );
         })}
@@ -115,8 +131,8 @@ export function WhiteboardToolbar({ onOpenExport }) {
       {/* ── Text Tool ── */}
       <button
         onClick={() => selectTool("text")}
-        title="Text & Annotation"
-        className="w-8 h-8 rounded-xl flex items-center justify-center font-bold text-sm transition-all cursor-pointer"
+        title="Text & Annotation (T)"
+        className="relative w-8 h-8 rounded-xl flex items-center justify-center font-bold text-sm transition-all cursor-pointer group"
         style={{
           background: tool === "text" ? "rgb(99, 102, 241)" : "transparent",
           color: tool === "text" ? "#ffffff" : "rgb(203, 213, 225)",
@@ -124,6 +140,9 @@ export function WhiteboardToolbar({ onOpenExport }) {
         }}
       >
         <span>T</span>
+        <span className="absolute -bottom-1 -right-0.5 text-[8px] font-mono opacity-60 group-hover:opacity-100 bg-slate-950/80 px-0.5 rounded leading-none text-slate-400">
+          T
+        </span>
       </button>
 
       {/* ── Code Block Tool ── */}
@@ -278,11 +297,11 @@ export function WhiteboardToolbar({ onOpenExport }) {
         )}
       </div>
 
-      {/* ── Architecture Templates Flyout ── */}
+      {/* ── Architecture & Data Structure Templates Flyout ── */}
       <div className="relative">
         <button
           onClick={() => setActiveMenu(activeMenu === "templates" ? null : "templates")}
-          title="Architecture & Flow Templates"
+          title="Architecture & Diagram Templates"
           className="h-8 px-2 rounded-xl flex items-center gap-1 font-bold text-xs transition-all cursor-pointer text-slate-300 hover:bg-slate-800"
           style={{
             background: activeMenu === "templates" ? "rgb(99, 102, 241)" : "transparent",
@@ -299,8 +318,28 @@ export function WhiteboardToolbar({ onOpenExport }) {
             className="absolute top-10 left-0 w-72 max-h-88 overflow-y-auto rounded-xl p-2 shadow-2xl backdrop-blur-xl border border-slate-700 bg-slate-900/95 z-50 text-xs flex flex-col gap-1.5"
           >
             <div className="px-2 py-1 text-[10px] font-semibold text-indigo-400 uppercase tracking-wider">
-              Developer Architecture Templates
+              Templates
             </div>
+
+            {/* Data Structure Templates */}
+            <button
+              onClick={() => {
+                setActiveMenu(null);
+                onOpenDataStructure?.();
+              }}
+              className="flex items-start gap-2 p-2 rounded-lg text-left hover:bg-slate-800 text-slate-200 transition-colors cursor-pointer group"
+            >
+              <span className="text-xl leading-none mt-0.5">🌳</span>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-indigo-300 group-hover:text-indigo-200">
+                  Data Structures
+                </div>
+                <div className="text-[11px] text-slate-400 leading-snug line-clamp-2">
+                  Linked List, Array, Stack, Queue, BST, Trie, Heap, Graph
+                </div>
+              </div>
+            </button>
+
             {DIAGRAM_TEMPLATES.map((tpl) => (
               <button
                 key={tpl.id}
