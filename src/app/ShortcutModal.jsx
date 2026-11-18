@@ -20,6 +20,14 @@ const GLOBAL_SHORTCUTS = [
     {
         title: "CodeLens Board (Whiteboard)",
         shortcuts: [
+            { keys: ["Ctrl", "C"], description: "Copy selected element(s)" },
+            { keys: ["Ctrl", "V"], description: "Paste element(s)" },
+            { keys: ["Ctrl", "X"], description: "Cut selected element(s)" },
+            { keys: ["Ctrl", "D"], description: "Duplicate selected element(s)" },
+            { keys: ["Del / ⌫"], description: "Delete selected element(s)" },
+            { keys: ["Ctrl", "A"], description: "Select all elements" },
+            { keys: ["Ctrl", "Z"], description: "Undo last canvas action" },
+            { keys: ["Ctrl", "Y"], description: "Redo last canvas action" },
             { keys: ["S"], description: "Select & Move tool (or V)" },
             { keys: ["H"], description: "Hand / Pan tool" },
             { keys: ["P"], description: "Pencil / Pen freehand drawing" },

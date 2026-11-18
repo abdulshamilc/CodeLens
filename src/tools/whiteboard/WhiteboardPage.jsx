@@ -21,9 +21,17 @@ export function WhiteboardPage() {
     setTool,
     addElement,
     setSelectedIds,
+    selectedIds,
+    deleteSelected,
+    duplicateSelected,
+    undo,
+    redo,
   } = useWhiteboardStore();
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [isDataStructureOpen, setIsDataStructureOpen] = useState(false);
+
+  const clipboardRef = React.useRef([]);
+  const pasteOffsetCountRef = React.useRef(1);
 
   // Load saved canvas on initial mount & set title
   useEffect(() => {
@@ -31,11 +39,13 @@ export function WhiteboardPage() {
     loadFromStorage();
   }, [loadFromStorage]);
 
-  // Keyboard shortcuts for quick tool selection: Select (S/V), Hand (H), Pencil/Pen (P), Eraser (E), Text (T)
+  // Standard Keyboard Shortcuts: Copy (Ctrl+C), Paste (Ctrl+V), Cut (Ctrl+X), Delete (Del/Backspace),
+  // Duplicate (Ctrl+D), Select All (Ctrl+A), Undo (Ctrl+Z), Redo (Ctrl+Y), and Tool selection (S, H, P, E, T)
   useEffect(() => {
     const handleKeyDown = (e) => {
       const target = e.target;
       const activeEl = document.activeElement;
+      // Never intercept when user is typing in any input, textarea, or contenteditable
       if (
         target?.tagName === "INPUT" ||
         target?.tagName === "TEXTAREA" ||
@@ -53,7 +63,146 @@ export function WhiteboardPage() {
         return;
       }
 
-      if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+      const isModifier = e.ctrlKey || e.metaKey;
+
+      // ── 1. Delete / Backspace ──
+      if (e.key === "Delete" || e.key === "Backspace") {
+        if (selectedIds && selectedIds.length > 0) {
+          e.preventDefault();
+          deleteSelected();
+        }
+        return;
+      }
+
+      // ── 2. Ctrl / Cmd Combinations ──
+      if (isModifier) {
+        const key = e.key.toLowerCase();
+
+        // Copy (Ctrl+C)
+        if (key === "c") {
+          if (selectedIds && selectedIds.length > 0) {
+            e.preventDefault();
+            const toCopy = elements.filter((el) => selectedIds.includes(el.id));
+            if (toCopy.length > 0) {
+              clipboardRef.current = toCopy.map((el) => JSON.parse(JSON.stringify(el)));
+              pasteOffsetCountRef.current = 1;
+              try {
+                navigator.clipboard?.writeText?.(JSON.stringify(clipboardRef.current));
+              } catch {
+                // ignore
+              }
+            }
+          }
+          return;
+        }
+
+        // Cut (Ctrl+X)
+        if (key === "x") {
+          if (selectedIds && selectedIds.length > 0) {
+            e.preventDefault();
+            const toCopy = elements.filter((el) => selectedIds.includes(el.id) && !el.locked);
+            if (toCopy.length > 0) {
+              clipboardRef.current = toCopy.map((el) => JSON.parse(JSON.stringify(el)));
+              pasteOffsetCountRef.current = 1;
+              try {
+                navigator.clipboard?.writeText?.(JSON.stringify(clipboardRef.current));
+              } catch {
+                // ignore
+              }
+              deleteSelected();
+            }
+          }
+          return;
+        }
+
+        // Paste (Ctrl+V)
+        if (key === "v") {
+          e.preventDefault();
+          const handlePasteItems = (items) => {
+            if (!items || items.length === 0) return;
+            const offset = 24 * pasteOffsetCountRef.current;
+            pasteOffsetCountRef.current += 1;
+            const newIds = [];
+
+            items.forEach((item, idx) => {
+              const newId = `el-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 7)}`;
+              newIds.push(newId);
+              const cloned = {
+                ...JSON.parse(JSON.stringify(item)),
+                id: newId,
+                x: item.x + offset,
+                y: item.y + offset,
+                name: item.name ? `${item.name} (Copy)` : undefined,
+              };
+              if (cloned.points) {
+                cloned.points = cloned.points.map((p) => ({
+                  x: p.x + offset,
+                  y: p.y + offset,
+                }));
+              }
+              addElement(cloned);
+            });
+
+            setSelectedIds(newIds);
+          };
+
+          if (clipboardRef.current && clipboardRef.current.length > 0) {
+            handlePasteItems(clipboardRef.current);
+          } else {
+            navigator.clipboard?.readText?.().then((text) => {
+              try {
+                const parsed = JSON.parse(text);
+                if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].id) {
+                  handlePasteItems(parsed);
+                }
+              } catch {
+                // not JSON
+              }
+            }).catch(() => {});
+          }
+          return;
+        }
+
+        // Duplicate (Ctrl+D)
+        if (key === "d") {
+          if (selectedIds && selectedIds.length > 0) {
+            e.preventDefault();
+            duplicateSelected();
+          }
+          return;
+        }
+
+        // Select All (Ctrl+A)
+        if (key === "a") {
+          e.preventDefault();
+          const allIds = elements.filter((el) => !el.hidden).map((el) => el.id);
+          setSelectedIds(allIds);
+          return;
+        }
+
+        // Undo (Ctrl+Z) / Redo (Ctrl+Shift+Z)
+        if (key === "z") {
+          e.preventDefault();
+          if (e.shiftKey) {
+            redo();
+          } else {
+            undo();
+          }
+          return;
+        }
+
+        // Redo (Ctrl+Y)
+        if (key === "y") {
+          e.preventDefault();
+          redo();
+          return;
+        }
+
+        return;
+      }
+
+      // ── 3. Single-Key Tool Selection ──
+      if (!isModifier && !e.altKey) {
         const key = e.key.toLowerCase();
         switch (key) {
           case "s":
@@ -85,7 +234,19 @@ export function WhiteboardPage() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [setTool, isExportOpen, isDataStructureOpen]);
+  }, [
+    setTool,
+    isExportOpen,
+    isDataStructureOpen,
+    selectedIds,
+    elements,
+    deleteSelected,
+    duplicateSelected,
+    setSelectedIds,
+    addElement,
+    undo,
+    redo,
+  ]);
 
   // Insert chosen Data Structure template at center of current canvas viewport
   const handleInsertDataStructure = (structureId) => {
